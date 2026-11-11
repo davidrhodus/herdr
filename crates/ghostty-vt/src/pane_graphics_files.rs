@@ -254,6 +254,7 @@ impl OwnedExport {
         self.lease.copy_rgba()
     }
 
+    #[cfg(all(test, unix))]
     pub(crate) fn read_into(&self, data: &mut [u8]) -> io::Result<()> {
         self.lease.read_into(data)
     }

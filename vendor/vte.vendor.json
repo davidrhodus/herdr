@@ -1,0 +1,8 @@
+{
+  "crate": "vte",
+  "version": "0.15.0",
+  "source": "https://crates.io/crates/vte/0.15.0",
+  "checksum": "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd",
+  "patch": "Batch printable ASCII and numeric CSI parameters; expose borrowed single parameters and APC/C1 termination hooks; retain default-compatible callbacks and fragmented-input coverage.",
+  "patch_file": "vte.patch"
+}

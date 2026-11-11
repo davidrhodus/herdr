@@ -2,13 +2,21 @@
 name = "ghostty-vt"
 version = "0.0.0"
 edition = "2021"
-description = "Herdr's binding to its vendored libghostty-vt"
+description = "Herdr native Rust terminal engine"
 license = "Apache-2.0"
 repository = "https://github.com/herdrdev/herdr"
 publish = false
 
 [dependencies]
 base64 = "0.22.1"
+crc32fast = "1"
+flate2 = "1"
 libc = "0.2"
+memchr = "2"
 png = "0.17"
+smallvec = "1"
 tracing = "0.1.44"
+vte = { version = "0.15", path = "../../vendor/vte", default-features = false }
+
+[dev-dependencies]
+sha2 = "0.10"

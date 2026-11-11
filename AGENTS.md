@@ -140,17 +140,9 @@ just check              # formatting check + cargo nextest + maintenance script 
 
 Run `just check` before committing unless Can explicitly accepts narrower validation. Do not bypass failing checks; fix the failure or explain exactly why a narrower check is enough.
 
-Windows MSVC cross-compilation from Unix requires SDK/CRT headers and libraries.
-Install `xwin` with `cargo install xwin --locked`, then run
-`just setup-windows-cross` once and accept Microsoft's SDK license when prompted.
-This downloads the SDK directly from Microsoft; no Windows machine is required.
-The SDK and Zig libc configuration live at `~/.local/share/herdr/windows-cross/`,
-shared by worktrees. `just windows-lint` and the Windows stage of `just check`
-use this configuration automatically. To use another SDK, set
-`LIBGHOSTTY_VT_WINDOWS_LIBC` to its Zig libc configuration file.
-Setup accepts `--accept-license` for explicit noninteractive license acceptance;
-normal checks never download the SDK. Native Windows builds auto-detect their
-installed SDK. Native Linux/macOS builds do not need the Windows SDK.
+Windows target checks from Unix compile Rust metadata without linking.
+Run `just setup-windows-cross` to install the Rust target, then
+`just windows-lint`. A Windows SDK is only needed when linking a Windows binary.
 
 Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState` or `Workspace` behavior should be testable with `AppState::test_new()` and `Workspace::test_new()` without PTYs.
 
@@ -184,11 +176,7 @@ named `herdr`, so avoid paths like `C:\Users\herdr\herdr`.
 Before validating a fix on Windows, sync or apply the Linux worktree changes
 into `C:\work\repo`, then run the needed Windows build or test commands there.
 Reuse the shared Rust caches under `C:\Users\herdr\.cargo` and
-`C:\Users\herdr\.rustup`. Do not use WSL on the VM. The VM may have a newer
-Zig on `PATH`; Herdr currently requires Zig 0.16.0, so set
-`$env:ZIG = "C:\Users\herdr\zig-0.16.0\zig.exe"` before running Cargo commands
-that build the vendored libghostty-vt.
-
+`C:\Users\herdr\.rustup`. Do not use WSL on the VM.
 After validation, leave `C:\work\repo` clean. Remove temporary files and delete
 `C:\work\repo\target` when disk space is tight, but keep the shared Cargo and
 Rustup caches. Unless Can explicitly asks to keep the patched tree for more
@@ -204,15 +192,12 @@ Validate agent-specific detection behavior with live smoke tests through the man
 
 `distribution/agent-detection/` is the remotely published catalog for released clients. Keep changes for already released agents aligned with their bundled manifests unless the validator records an exact compatibility exception. A newly bundled agent that current stable clients cannot identify may remain unpublished behind an exact version-and-digest exception, but it must be added to the catalog and the exception removed before the first stable release that ships it. `just release-docs-check` enforces that no unpublished exceptions remain.
 
-## Vendored libghostty-vt
+## Native terminal engine
 
-`vendor/libghostty-vt.vendor.json` records the upstream source commit currently vendored.
-
-Local patches on top of the vendored source must be tracked in `vendor/libghostty-vt.patches.md` and stored as patch files under `vendor/patches/libghostty-vt/`. Each entry should say why the patch exists, the Herdr issue, upstream PR/discussion, vendored base commit, touched files, verification, and the exact removal condition.
-
-When updating libghostty-vt, check every active patch in `vendor/libghostty-vt.patches.md`. If the new upstream commit contains the fix, remove the local patch and index entry, then rerun the listed verification. If not, reapply the patch on top of the new vendored source.
-
-`just check` runs maintenance tests that verify local libghostty-vt patch files are listed in the index and reverse-apply cleanly against the vendored tree. Do not leave a patch file untracked or an indexed patch unapplied.
+`crates/ghostty-vt` implements the terminal engine in Rust. Its crate name is
+retained for application API compatibility. `vendor/vte.vendor.json` records the
+Rust parser source and local batching/framing patches. Preserve the frozen input and
+Unicode reference fixtures when changing terminal behavior.
 
 ## Docs
 

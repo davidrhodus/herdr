@@ -81,33 +81,20 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             name: herdr-linux-x86_64
-            libghostty_vt_optimize: ReleaseFast
-            libghostty_vt_simd: 'true'
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: herdr-linux-aarch64
-            libghostty_vt_optimize: ReleaseFast
-            libghostty_vt_simd: 'true'
           - target: x86_64-apple-darwin
             os: macos-latest
             name: herdr-macos-x86_64
-            libghostty_vt_optimize: ReleaseFast
-            libghostty_vt_simd: 'true'
           - target: aarch64-apple-darwin
             os: macos-latest
             name: herdr-macos-aarch64
-            libghostty_vt_optimize: ReleaseFast
-            libghostty_vt_simd: 'true'
           - target: x86_64-pc-windows-msvc
             os: windows-2022
             name: herdr-windows-x86_64.zip
-            libghostty_vt_optimize: ReleaseFast
-            libghostty_vt_simd: 'true'
 
     runs-on: ${{ matrix.os }}
-    env:
-      LIBGHOSTTY_VT_OPTIMIZE: ${{ matrix.libghostty_vt_optimize }}
-      LIBGHOSTTY_VT_SIMD: ${{ matrix.libghostty_vt_simd }}
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -129,11 +116,6 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
           targets: ${{ matrix.target }}
-
-      - name: Install Zig
-        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
-        with:
-          version: 0.16.0
 
       - name: Prefer official Ubuntu mirrors over Azure
         if: runner.os == 'Linux'
@@ -163,10 +145,6 @@ jobs:
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: release-${{ matrix.target }}
-
-      - name: Remove Zig caches
-        shell: bash
-        run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}

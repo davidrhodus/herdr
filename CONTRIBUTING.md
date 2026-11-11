@@ -123,18 +123,11 @@ Maintainers also run `just check`, which includes Windows cross-compilation on
 Linux/macOS. Set up that target once:
 
 ```bash
-cargo install xwin --locked
 just setup-windows-cross
 ```
 
-`xwin` downloads Microsoft's Windows SDK and CRT directly and prompts for license
-acceptance. No Windows machine is needed. For noninteractive setup, pass
-`just setup-windows-cross --accept-license` only after accepting that license.
-The SDK is stored in `~/.local/share/herdr/windows-cross/` and reused across
-worktrees; subsequent `just check` and `just windows-lint` runs use it automatically.
-An existing SDK can be selected with `LIBGHOSTTY_VT_WINDOWS_LIBC`, pointing to its
-Zig libc configuration file. Ordinary native Linux/macOS builds do not need this
-setup. Native Windows builds use the SDK installed with Visual Studio Build Tools.
+Windows lint checks compile Rust metadata without linking and require only the
+Rust target. Native Windows builds use Visual Studio Build Tools to link.
 
 ### Handle documentation correctly
 

@@ -93,13 +93,8 @@
               ninja
               pkg-config
               rustToolchain
-              zig_0_16
             ];
 
-            env = {
-              LIBGHOSTTY_VT_OPTIMIZE = "Debug";
-              LIBGHOSTTY_VT_SIMD = "true";
-            };
           };
         }
       );
