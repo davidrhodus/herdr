@@ -1,5 +1,5 @@
 //! Count Rust allocation requests on only the calling test thread.
-//! Native terminal allocations and concurrent tests are deliberately excluded.
+//! Concurrent tests and allocations on other threads are deliberately excluded.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

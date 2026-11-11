@@ -386,3 +386,9 @@ mod fixtures {
 
 #[cfg(test)]
 mod parse_benchmark;
+
+#[cfg(test)]
+mod render_parse_benchmark;
+
+#[cfg(test)]
+mod render_snapshot_tests;

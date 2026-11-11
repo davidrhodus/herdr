@@ -5,7 +5,8 @@ use crate::{
 use std::{cell::Cell, sync::Arc};
 
 pub struct RenderState {
-    rows: Vec<Arc<Row>>,
+    rows: Vec<Row>,
+    source: u64,
     styles: Arc<Vec<CellStyle>>,
     dirty_rows: Vec<Cell<bool>>,
     dirty: Dirty,
@@ -20,6 +21,7 @@ impl RenderState {
     pub fn new() -> Result<Self, Error> {
         Ok(Self {
             rows: Vec::new(),
+            source: 0,
             styles: Arc::new(vec![CellStyle::default()]),
             dirty_rows: Vec::new(),
             dirty: Dirty::Full,
@@ -61,11 +63,38 @@ impl RenderState {
         if terminal.mode_get(5)? {
             std::mem::swap(&mut colors.background, &mut colors.foreground);
         }
-        let full = self.cols as usize != s.cols
-            || self.height as usize != s.rows
+        let new_source = self.source != s.identity;
+        let geometry_changed = self.cols as usize != s.cols || self.height as usize != s.rows;
+        let full = new_source
+            || geometry_changed
             || self.screen != screen
             || self.layout != s.layout_revision
             || self.colors != colors;
+        if full && !new_source && !geometry_changed && self.rows.len() == s.rows {
+            // Reuse snapshots of unchanged rows that moved within the viewport.
+            // Dirty flags stay attached to viewport positions; full redraws
+            // still paint every position after scrolling.
+            if let Some(first) = s.lines.get(top) {
+                if let Some(shift) = self
+                    .rows
+                    .iter()
+                    .position(|row| row.version == first.version)
+                {
+                    self.rows.rotate_left(shift);
+                } else if let Some(first) = self.rows.first() {
+                    if let Some(shift) = s
+                        .lines
+                        .iter()
+                        .skip(top)
+                        .take(s.rows)
+                        .position(|row| row.version == first.version)
+                    {
+                        self.rows.rotate_right(shift);
+                    }
+                }
+            }
+        }
+        self.source = s.identity;
         self.cols = s.cols as u16;
         self.height = s.rows as u16;
         self.screen = screen;
@@ -77,17 +106,17 @@ impl RenderState {
             let different = self
                 .rows
                 .get(y)
-                .is_none_or(|old| old.version != row.version || !Arc::ptr_eq(old, row));
+                .is_none_or(|old| new_source || geometry_changed || old.version != row.version);
             if full || different {
                 self.dirty_rows[y].set(true);
                 changed = true;
             }
             if let Some(old) = self.rows.get_mut(y) {
                 if different {
-                    *old = Arc::clone(row);
+                    old.refresh_render_copy(row, geometry_changed);
                 }
             } else {
-                self.rows.push(Arc::clone(row));
+                self.rows.push(row.render_copy());
             }
         }
         self.rows.truncate(s.rows);
@@ -250,6 +279,7 @@ impl RowCellIter<'_> {
         self.next = x as usize + 1;
         Ok(())
     }
+    #[inline]
     fn cell(&self) -> Result<&GridCell, Error> {
         Ok(self.row.cell(self.current.ok_or(Error(-2))?))
     }
@@ -257,6 +287,7 @@ impl RowCellIter<'_> {
         let c = self.cell()?;
         Ok(!c.meaningful() && c.wide == CellWide::Narrow)
     }
+    #[inline]
     pub fn basic_data(&self) -> Result<CellBasicData, Error> {
         let c = self.cell()?;
         Ok(CellBasicData {
@@ -266,15 +297,19 @@ impl RowCellIter<'_> {
             style: self.styles[c.style as usize],
         })
     }
+    #[inline]
     pub fn wide(&self) -> Result<CellWide, Error> {
         Ok(self.cell()?.wide)
     }
+    #[inline]
     pub fn has_hyperlink(&self) -> Result<bool, Error> {
         Ok(self.cell()?.link != 0)
     }
+    #[inline]
     pub fn style(&self) -> Result<CellStyle, Error> {
         Ok(self.styles[self.cell()?.style as usize])
     }
+    #[inline]
     pub fn content_bg_color(&self) -> Result<Option<CellColor>, Error> {
         let c = self.cell()?;
         Ok(if !c.has_text() {
@@ -283,21 +318,25 @@ impl RowCellIter<'_> {
             None
         })
     }
+    #[inline]
     fn color(&self, color: Option<CellColor>) -> Option<RgbColor> {
         color.map(|c| match c {
             CellColor::Palette(i) => self.palette[i as usize],
             CellColor::Rgb(c) => c,
         })
     }
+    #[inline]
     pub fn fg_color(&self) -> Result<Option<RgbColor>, Error> {
         Ok(self.color(self.style()?.fg_color))
     }
+    #[inline]
     pub fn bg_color(&self) -> Result<Option<RgbColor>, Error> {
         Ok(self.color(self.style()?.bg_color))
     }
     pub fn grapheme_text(&self) -> Result<String, Error> {
         Ok(self.row.string(self.cell()?))
     }
+    #[inline]
     pub fn grapheme_text_into(&self, _bytes: &mut Vec<u8>, text: &mut String) -> Result<(), Error> {
         text.clear();
         let c = self.cell()?;

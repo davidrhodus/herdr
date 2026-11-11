@@ -256,3 +256,7 @@ default-config:
 # Profile plain and styled terminal parsing at 1 and 15 panes.
 bench-parse-scale:
     cargo test --release --locked -p ghostty-vt native_parser_scale_profile -- --ignored --nocapture --test-threads=1
+
+# Parse while retaining and refreshing render snapshots at 1 and 15 panes.
+bench-render-parse-scale:
+    cargo test --release --locked -p ghostty-vt render_active_parser_scale_profile -- --ignored --nocapture --test-threads=1

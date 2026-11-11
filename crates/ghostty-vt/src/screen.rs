@@ -195,12 +195,37 @@ impl<'a> IntoIterator for &'a mut Cells {
 #[derive(Clone)]
 pub(crate) struct Row {
     pub cells: Cells,
-    pub graphemes: Vec<Option<Arc<Vec<u32>>>>,
+    pub graphemes: Vec<Option<Arc<smallvec::SmallVec<[u32; 4]>>>>,
     pub wrapped: bool,
     pub continuation: bool,
     pub version: u64,
 }
 impl Row {
+    pub fn render_copy(&self) -> Self {
+        Self {
+            cells: Cells::Dense(self.cells.to_vec()),
+            graphemes: self.graphemes.clone(),
+            wrapped: self.wrapped,
+            continuation: self.continuation,
+            version: self.version,
+        }
+    }
+    pub fn refresh_render_copy(&mut self, source: &Self, geometry_changed: bool) {
+        // Keep warmed buffers across text changes, but release oversized
+        // capacities when the viewport geometry shrinks.
+        let cells = &mut *self.cells;
+        cells.clone_from(&source.cells);
+        if geometry_changed && cells.capacity() > cells.len().saturating_mul(2) {
+            cells.shrink_to_fit();
+        }
+        self.graphemes.clone_from(&source.graphemes);
+        if geometry_changed && self.graphemes.capacity() > self.graphemes.len().saturating_mul(2) {
+            self.graphemes.shrink_to_fit();
+        }
+        self.wrapped = source.wrapped;
+        self.continuation = source.continuation;
+        self.version = source.version;
+    }
     pub fn new(cols: usize, version: u64) -> Self {
         Self {
             cells: Cells::new(vec![Cell::default(); cols]),
@@ -210,6 +235,7 @@ impl Row {
             version,
         }
     }
+    #[inline]
     pub fn cell(&self, x: usize) -> &Cell {
         self.cells.get(x).unwrap_or(&EMPTY_CELL)
     }
@@ -227,18 +253,24 @@ impl Row {
                 .map_or(&[], |p| p.as_slice())
         }
     }
-    pub fn cluster(&self, cell: &Cell) -> Option<Arc<Vec<u32>>> {
+    pub fn cluster(&self, cell: &Cell) -> Option<Arc<smallvec::SmallVec<[u32; 4]>>> {
         cell.cluster
             .checked_sub(1)
             .and_then(|id| self.graphemes.get(id as usize))
             .and_then(Clone::clone)
     }
+    #[inline]
     pub fn push_text(&self, cell: &Cell, out: &mut String) {
-        let text = self.text(cell);
-        if text.is_empty() && cell.wide == CellWide::Narrow {
-            out.push(' ');
+        if cell.cluster == 0 {
+            if cell.scalar[0] == 0 {
+                if cell.wide == CellWide::Narrow {
+                    out.push(' ');
+                }
+            } else if let Some(character) = char::from_u32(cell.scalar[0]) {
+                out.push(character);
+            }
         } else {
-            out.extend(text.iter().filter_map(|cp| char::from_u32(*cp)));
+            out.extend(self.text(cell).iter().filter_map(|cp| char::from_u32(*cp)));
         }
     }
     pub fn string(&self, cell: &Cell) -> String {
@@ -264,7 +296,7 @@ impl Row {
             }
         }
     }
-    fn store_cluster(&mut self, cluster: Arc<Vec<u32>>) -> u32 {
+    fn store_cluster(&mut self, cluster: Arc<smallvec::SmallVec<[u32; 4]>>) -> u32 {
         if self.graphemes.len() >= self.cells.len().max(1) {
             self.collect_graphemes();
         }
@@ -276,13 +308,18 @@ impl Row {
             self.graphemes.len() as u32
         }
     }
-    pub fn import(&mut self, x: usize, mut cell: Cell, cluster: Option<Arc<Vec<u32>>>) {
+    pub fn import(
+        &mut self,
+        x: usize,
+        mut cell: Cell,
+        cluster: Option<Arc<smallvec::SmallVec<[u32; 4]>>>,
+    ) {
         cell.cluster = cluster.map_or(0, |value| self.store_cluster(value));
         self.cells[x] = cell;
     }
     pub fn append(&mut self, x: usize, cp: u32) {
         if self.cells[x].cluster == 0 {
-            let value = Arc::new(vec![self.cells[x].scalar[0], cp]);
+            let value = Arc::new(smallvec::smallvec![self.cells[x].scalar[0], cp]);
             self.cells[x].cluster = self.store_cluster(value);
         } else {
             let id = self.cells[x].cluster as usize - 1;
@@ -294,12 +331,17 @@ impl Row {
     pub fn bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.cells.budget_bytes()
-            + self.graphemes.capacity() * std::mem::size_of::<Option<Arc<Vec<u32>>>>()
+            + self.graphemes.capacity()
+                * std::mem::size_of::<Option<Arc<smallvec::SmallVec<[u32; 4]>>>>()
             + self
                 .graphemes
                 .iter()
                 .flatten()
-                .map(|g| g.capacity() * 4 + std::mem::size_of::<Vec<u32>>() + 16)
+                .map(|g| {
+                    std::mem::size_of::<smallvec::SmallVec<[u32; 4]>>()
+                        + 16
+                        + if g.spilled() { g.capacity() * 4 } else { 0 }
+                })
                 .sum::<usize>()
     }
     pub fn compact(&mut self) {
@@ -352,7 +394,11 @@ pub(crate) struct Scroll {
     pub bottom: i64,
     pub delta: i64,
 }
+// Constructed once per primary/alternate screen; row revisions may restart on
+// reset, so render snapshots also compare this instance identity.
+static NEXT_SCREEN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 pub(crate) struct Screen {
+    pub identity: u64,
     pub scrolls: Vec<Scroll>,
     pub lines: VecDeque<Arc<Row>>,
     pub cols: usize,
@@ -373,6 +419,7 @@ pub(crate) struct Screen {
 impl Screen {
     pub fn new(cols: usize, rows: usize, budget: usize) -> Self {
         Self {
+            identity: NEXT_SCREEN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             scrolls: Vec::new(),
             lines: (0..rows)
                 .map(|i| Arc::new(Row::new(cols, i as u64 + 1)))
@@ -451,6 +498,22 @@ impl Screen {
             });
         }
         for _ in 0..count {
+            if keep_history && self.top == 0 && self.bottom == self.rows - 1 && self.budget == 0 {
+                if let Some(mut row) = self.lines.pop_front() {
+                    self.revision = self.revision.wrapping_add(1);
+                    let value = Arc::make_mut(&mut row);
+                    value.cells.resize(self.cols, Cell::blank(style));
+                    value.cells.fill(Cell::blank(style));
+                    value.graphemes.clear();
+                    value.wrapped = false;
+                    value.continuation = false;
+                    value.version = self.revision;
+                    self.lines.push_back(row);
+                    self.dropped = self.dropped.wrapping_add(1);
+                    self.offset = 0;
+                    continue;
+                }
+            }
             let blank = self.blank(style);
             if keep_history && self.top == 0 && self.bottom == self.rows - 1 {
                 if self.offset > 0 {

@@ -2,7 +2,7 @@
 use crate::{CellColor, RenderState, RgbColor, RowCells, RowIterator, Terminal};
 use std::{hint::black_box, time::Instant};
 
-fn stream(styled: bool) -> String {
+pub(super) fn stream(styled: bool) -> String {
     if styled {
         format!(
             "\x1b[H{}",
