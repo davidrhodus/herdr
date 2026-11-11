@@ -459,7 +459,9 @@ impl Terminal {
             .collect();
         s.lines = kept;
         s.dropped += start as u64;
-        s.y = cursor - start;
+        // A wrapped input line can extend into history. Cursor coordinates
+        // remain relative to the live viewport after retaining that line.
+        s.y = (cursor - start).saturating_sub(s.history()).min(s.rows - 1);
         s.offset = 0;
         s.history_bytes = 0;
         for row in &mut s.lines {
@@ -469,6 +471,13 @@ impl Terminal {
             let row = s.blank(0);
             s.lines.push_back(row);
         }
+        s.history_bytes = s
+            .lines
+            .iter()
+            .take(s.history())
+            .map(|row| row.bytes())
+            .sum();
+        s.trim_history();
         s.layout_revision = s.layout_revision.wrapping_add(1);
         self.last = None;
         true
@@ -1120,6 +1129,7 @@ impl Perform for Terminal {
                 if !store {
                     return;
                 }
+                let erase = self.erase_style_id;
                 let s = self.screen_mut();
                 if y < s.rows && x < s.cols {
                     let cols = s.cols;
@@ -1143,6 +1153,9 @@ impl Perform for Terminal {
                             let y = s.y;
                             let row = s.live_row_mut(y);
                             row.continuation = true;
+                            if cols > 2 && row.cells[1].wide == CellWide::Wide {
+                                row.cells[2] = Cell::blank(erase);
+                            }
                             row.import(
                                 0,
                                 Cell {
@@ -1164,6 +1177,12 @@ impl Perform for Terminal {
                         return;
                     }
                     if new_width != old_width {
+                        // A widened grapheme can cover the head of another
+                        // wide glyph; retire its tail outside the new span.
+                        if new_width == 2 && x + 2 < cols && row.cells[x + 1].wide == CellWide::Wide
+                        {
+                            row.cells[x + 2] = Cell::blank(erase);
+                        }
                         row.cells[x].wide = if new_width == 2 {
                             CellWide::Wide
                         } else {
@@ -1202,8 +1221,13 @@ impl Perform for Terminal {
         let auto = self.mode(7);
         let insert = self.mode(0x8004);
         let style = self.erase_style_id;
-        self.screen_mut()
-            .put(cell, width as usize, auto, insert, style);
+        if !self
+            .screen_mut()
+            .put(cell, width as usize, auto, insert, style)
+        {
+            self.last = None;
+            return;
+        }
         let s = self.screen();
         let x = if s.wrap_pending {
             s.cols.saturating_sub(width as usize)
@@ -1976,8 +2000,16 @@ impl Terminal {
                 }
                 self.moved();
             }
-            'S' => self.screen_mut().scroll_up(count, style),
-            'T' => self.screen_mut().scroll_down(count, style),
+            'S' | 'T' => {
+                if action == 'S' {
+                    self.screen_mut().scroll_up(count, style);
+                } else {
+                    self.screen_mut().scroll_down(count, style);
+                }
+                // Scrolling may move or remove the glyph tracked by `last`.
+                self.last = None;
+                self.grapheme = crate::unicode::State::default();
+            }
             'r' if inter.is_empty() => {
                 let origin = self.mode(6);
                 let s = self.screen_mut();
@@ -2078,3 +2110,7 @@ impl Terminal {
         }
     }
 }
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[path = "fuzz_support.rs"]
+pub mod fuzz_support;

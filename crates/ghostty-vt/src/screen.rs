@@ -590,9 +590,16 @@ impl Screen {
         row.cells[start..end].fill(Cell::blank(style));
         row.wrapped = false;
     }
-    pub fn put(&mut self, mut cell: Cell, width: usize, autowrap: bool, insert: bool, style: u16) {
+    pub fn put(
+        &mut self,
+        mut cell: Cell,
+        width: usize,
+        autowrap: bool,
+        insert: bool,
+        style: u16,
+    ) -> bool {
         if width > self.cols {
-            return;
+            return false;
         }
         if self.wrap_pending && autowrap {
             self.live_row_mut(self.y).wrapped = true;
@@ -605,6 +612,9 @@ impl Screen {
             if autowrap {
                 let x = self.x;
                 let row = self.live_row_mut(self.y);
+                if x > 0 && row.cells[x].wide == CellWide::SpacerTail {
+                    row.cells[x - 1] = Cell::blank(style);
+                }
                 row.cells[x] = Cell {
                     wide: CellWide::SpacerHead,
                     ..Cell::default()
@@ -614,7 +624,7 @@ impl Screen {
                 self.x = 0;
                 self.live_row_mut(self.y).continuation = true;
             } else {
-                return;
+                return false;
             }
         }
         let x = self.x;
@@ -624,6 +634,7 @@ impl Screen {
             let n = width.min(cols - x);
             row.cells[x..].rotate_right(n);
             row.cells[x..x + n].fill(Cell::blank(style));
+            row.repair_wide();
         }
         if row.cells[x].wide == CellWide::SpacerTail && x > 0 {
             row.cells[x - 1] = Cell::blank(style);
@@ -651,6 +662,7 @@ impl Screen {
             self.x = cols - 1;
             self.wrap_pending = true;
         }
+        true
     }
     pub fn resize(
         &mut self,

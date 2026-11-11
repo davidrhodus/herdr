@@ -364,7 +364,12 @@
          }
      }
 
-@@ -683,7 +743,7 @@
+@@ -679,11 +739,11 @@
+             // If the entire buffer is valid, use the first character and continue parsing.
+             Ok(parsed) => {
+                 let c = unsafe { parsed.chars().next().unwrap_unchecked() };
+-                performer.print(c);
++                Self::dispatch_codepoint(performer, c);
 
                  self.partial_utf8_len = 0;
                  c.len_utf8() - old_bytes
@@ -373,7 +378,20 @@
              Err(err) => {
                  let valid_bytes = err.valid_up_to();
                  // If we have any valid bytes, that means we partially copied another
-@@ -709,22 +769,51 @@
+@@ -695,10 +755,10 @@
+                         parsed.chars().next().unwrap_unchecked()
+                     };
+
+-                    performer.print(c);
++                    Self::dispatch_codepoint(performer, c);
+
+                     self.partial_utf8_len = 0;
+-                    return valid_bytes - old_bytes;
++                    return c.len_utf8() - old_bytes;
+                 }
+
+                 match err.error_len() {
+@@ -709,22 +769,56 @@
 
                          self.partial_utf8_len = 0;
                          invalid_len - old_bytes
@@ -384,6 +402,14 @@
                  }
 -            },
 +            }
++        }
++    }
++
++    #[inline]
++    fn dispatch_codepoint<P: Perform>(performer: &mut P, c: char) {
++        match c {
++            '\x00'..='\x1f' | '\u{80}'..='\u{9f}' => performer.execute(c as u8),
++            _ => performer.print(c),
          }
      }
 
@@ -391,6 +417,10 @@
      #[inline]
      fn ground_dispatch<P: Perform>(performer: &mut P, text: &str) {
 -        for c in text.chars() {
+-            match c {
+-                '\x00'..='\x1f' | '\u{80}'..='\u{9f}' => performer.execute(c as u8),
+-                _ => performer.print(c),
+-            }
 +        let mut offset = 0;
 +        while offset < text.len() {
 +            let bytes = &text.as_bytes()[offset..];
@@ -420,15 +450,12 @@
 +            let Some(c) = text[offset..].chars().next() else {
 +                break;
 +            };
-             match c {
-                 '\x00'..='\x1f' | '\u{80}'..='\u{9f}' => performer.execute(c as u8),
-                 _ => performer.print(c),
-             }
++            Self::dispatch_codepoint(performer, c);
 +            offset += c.len_utf8();
          }
      }
  }
-@@ -762,6 +851,14 @@
+@@ -762,6 +856,14 @@
      /// Draw a character to the screen and update states.
      fn print(&mut self, _c: char) {}
 
@@ -443,7 +470,7 @@
      /// Execute a C0 or C1 control function.
      fn execute(&mut self, _byte: u8) {}
 
-@@ -788,6 +885,15 @@
+@@ -788,6 +890,15 @@
      /// terminated.
      fn unhook(&mut self) {}
 
@@ -459,7 +486,7 @@
      /// Dispatch an operating system command.
      fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
 
-@@ -868,18 +974,21 @@
+@@ -868,18 +979,21 @@
          fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, c: char) {
              let params = params.iter().map(|subparam| subparam.to_vec()).collect();
              let intermediates = intermediates.to_vec();
@@ -484,7 +511,7 @@
          }
 
          fn put(&mut self, byte: u8) {
-@@ -912,7 +1021,7 @@
+@@ -912,7 +1026,7 @@
                  assert_eq!(params.len(), 2);
                  assert_eq!(params[0], &OSC_BYTES[2..3]);
                  assert_eq!(params[1], &OSC_BYTES[4..(OSC_BYTES.len() - 1)]);
@@ -493,7 +520,7 @@
              _ => panic!("expected osc sequence"),
          }
      }
-@@ -945,7 +1054,7 @@
+@@ -945,7 +1059,7 @@
              Sequence::Osc(params, _) => {
                  assert_eq!(params.len(), MAX_OSC_PARAMS);
                  assert!(params.iter().all(Vec::is_empty));
@@ -502,7 +529,7 @@
              _ => panic!("expected osc sequence"),
          }
      }
-@@ -994,7 +1103,10 @@
+@@ -994,7 +1108,10 @@
 
          assert_eq!(dispatcher.dispatched[0], Sequence::Execute(b'\r'));
          let osc_data = INPUT[5..(INPUT.len() - 1)].into();
@@ -514,7 +541,7 @@
          assert_eq!(dispatcher.dispatched.len(), 2);
      }
 
-@@ -1010,7 +1122,7 @@
+@@ -1010,7 +1127,7 @@
          match &dispatcher.dispatched[0] {
              Sequence::Osc(params, _) => {
                  assert_eq!(params[1], &INPUT[4..(INPUT.len() - 2)]);
@@ -523,7 +550,7 @@
              _ => panic!("expected osc sequence"),
          }
      }
-@@ -1044,7 +1156,7 @@
+@@ -1044,7 +1161,7 @@
 
                  #[cfg(not(feature = "std"))]
                  assert_eq!(params[1].len(), MAX_OSC_RAW - params[0].len());
@@ -532,7 +559,7 @@
              _ => panic!("expected osc sequence"),
          }
      }
-@@ -1067,7 +1179,7 @@
+@@ -1067,7 +1184,7 @@
              Sequence::Csi(params, _, ignore, _) => {
                  assert_eq!(params.len(), params::MAX_PARAMS);
                  assert!(!ignore);
@@ -541,7 +568,7 @@
              _ => panic!("expected csi sequence"),
          }
      }
-@@ -1090,7 +1202,7 @@
+@@ -1090,7 +1207,7 @@
              Sequence::Csi(params, _, ignore, _) => {
                  assert_eq!(params.len(), params::MAX_PARAMS);
                  assert!(ignore);
@@ -550,7 +577,7 @@
              _ => panic!("expected csi sequence"),
          }
      }
-@@ -1154,7 +1266,7 @@
+@@ -1154,7 +1271,7 @@
                  assert_eq!(intermediates, b"?");
                  assert_eq!(params, &[[1049]]);
                  assert!(!ignore);
@@ -559,7 +586,7 @@
              _ => panic!("expected csi sequence"),
          }
      }
-@@ -1173,7 +1285,7 @@
+@@ -1173,7 +1290,7 @@
                  assert_eq!(params, &[vec![38, 2, 255, 0, 255], vec![1]]);
                  assert_eq!(intermediates, &[]);
                  assert!(!ignore);
@@ -568,7 +595,7 @@
              _ => panic!("expected csi sequence"),
          }
      }
-@@ -1193,7 +1305,7 @@
+@@ -1193,7 +1310,7 @@
                  assert_eq!(params.len(), params::MAX_PARAMS);
                  assert!(params.iter().all(|param| param == &[1]));
                  assert!(ignore);
@@ -577,7 +604,7 @@
              _ => panic!("expected dcs sequence"),
          }
      }
-@@ -1212,7 +1324,7 @@
+@@ -1212,7 +1329,7 @@
                  assert_eq!(intermediates, b"$");
                  assert_eq!(params, &[[1]]);
                  assert!(!ignore);
@@ -586,7 +613,7 @@
              _ => panic!("expected dcs sequence"),
          }
          assert_eq!(dispatcher.dispatched[1], Sequence::DcsPut(b'x'));
-@@ -1232,7 +1344,7 @@
+@@ -1232,7 +1349,7 @@
              Sequence::DcsHook(params, _, _, c) => {
                  assert_eq!(params, &[[0], [1]]);
                  assert_eq!(c, &'|');
@@ -595,7 +622,7 @@
              _ => panic!("expected dcs sequence"),
          }
          for (i, byte) in b"17/ab".iter().enumerate() {
-@@ -1270,7 +1382,7 @@
+@@ -1270,7 +1387,7 @@
                  assert_eq!(intermediates, b"(");
                  assert_eq!(*byte, b'A');
                  assert!(!ignore);
@@ -604,7 +631,7 @@
              _ => panic!("expected esc sequence"),
          }
      }
-@@ -1284,7 +1396,10 @@
+@@ -1284,7 +1401,10 @@
          parser.advance(&mut dispatcher, INPUT);
 
          assert_eq!(dispatcher.dispatched.len(), 2);
@@ -616,7 +643,7 @@
          assert_eq!(dispatcher.dispatched[1], Sequence::Esc(vec![35], false, 56));
      }
 
-@@ -1303,7 +1418,7 @@
+@@ -1303,7 +1423,7 @@
                  assert_eq!(params, &[[0; 32]]);
                  assert_eq!(c, &'x');
                  assert!(ignore);
@@ -625,7 +652,7 @@
              _ => panic!("expected csi sequence"),
          }
      }
-@@ -1323,7 +1438,7 @@
+@@ -1323,7 +1443,7 @@
                  assert_eq!(intermediates, b"?");
                  assert_eq!(params, &[[1049]]);
                  assert!(!ignore);
@@ -634,7 +661,7 @@
              _ => panic!("expected csi sequence"),
          }
      }
-@@ -1357,7 +1472,7 @@
+@@ -1357,7 +1477,7 @@
                  for item in params[1].iter() {
                      assert_eq!(*item, b'a');
                  }
@@ -643,7 +670,7 @@
              _ => panic!("expected osc sequence"),
          }
      }
-@@ -1381,7 +1496,7 @@
+@@ -1381,7 +1501,7 @@
              Sequence::Osc(params, false) => {
                  assert_eq!(params[0], b"2");
                  assert_eq!(params[1], INPUT_MIDDLE);
@@ -652,7 +679,7 @@
              _ => panic!("expected osc sequence"),
          }
      }
-@@ -1498,7 +1613,10 @@
+@@ -1498,7 +1618,10 @@
 
          assert_eq!(dispatcher.dispatched.len(), 4);
          assert_eq!(dispatcher.dispatched[0], Sequence::Print('�'));
@@ -664,7 +691,7 @@
          assert_eq!(dispatcher.dispatched[2], Sequence::Print('1'));
          assert_eq!(dispatcher.dispatched[3], Sequence::Print('2'));
      }
-@@ -1539,4 +1657,72 @@
+@@ -1539,4 +1662,89 @@
          assert_eq!(dispatcher.dispatched[0], Sequence::Execute(0x18));
          assert_eq!(dispatcher.dispatched[1], Sequence::Execute(0x1A));
      }
@@ -725,16 +752,33 @@
 +        .into_bytes()])
 +        {
 +            let mut bulk = Dispatcher::default();
-+            Parser::<1024>::new_with_size().advance(&mut bulk, &input);
++            Parser::<1024>::default().advance(&mut bulk, &input);
 +            for chunk in 1..=input.len() {
 +                let mut fragmented = Dispatcher::default();
-+                let mut parser = Parser::<1024>::new_with_size();
++                let mut parser = Parser::<1024>::default();
 +                for bytes in input.chunks(chunk) {
 +                    parser.advance(&mut fragmented, bytes);
 +                }
 +                assert_eq!(bulk.dispatched, fragmented.dispatched, "chunk {chunk}");
 +            }
 +        }
++    }
++    #[test]
++    fn partial_utf8_preserves_ascii_after_completed_codepoints_and_c1_dispatch() {
++        for input in [b"\xc2\x93".as_slice(), b"e\xcc\x81[\x81", b"\xc2\xa2a\xff"] {
++            let mut whole = Dispatcher::default();
++            Parser::<1024>::default().advance(&mut whole, input);
++            for split in 0..=input.len() {
++                let mut actual = Dispatcher::default();
++                let mut parser = Parser::<1024>::default();
++                parser.advance(&mut actual, &input[..split]);
++                parser.advance(&mut actual, &input[split..]);
++                assert_eq!(actual.dispatched, whole.dispatched, "split {split}");
++            }
++        }
++        let mut actual = Dispatcher::default();
++        Parser::<1024>::default().advance(&mut actual, b"\xc2\x93");
++        assert_eq!(actual.dispatched, [Sequence::Execute(0x93)]);
 +    }
  }
 --- a/src/params.rs

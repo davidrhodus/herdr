@@ -32,6 +32,9 @@ mod terminal;
 pub use render::*;
 pub use terminal::Terminal;
 
+#[cfg(any(test, feature = "fuzzing"))]
+pub use terminal::fuzz_support;
+
 pub const TERM: &str = "xterm-256color";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

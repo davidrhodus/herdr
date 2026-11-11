@@ -1,0 +1,26 @@
+[package]
+name = "herdr-terminal-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ghostty-vt = { path = "../crates/ghostty-vt", features = ["fuzzing"] }
+
+[[bin]]
+name = "parser_chunking"
+path = "fuzz_targets/parser_chunking.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_operations"
+path = "fuzz_targets/parser_operations.rs"
+test = false
+doc = false
+bench = false

@@ -260,3 +260,15 @@ bench-parse-scale:
 # Parse while retaining and refreshing render snapshots at 1 and 15 panes.
 bench-render-parse-scale:
     cargo test --release --locked -p ghostty-vt render_active_parser_scale_profile -- --ignored --nocapture --test-threads=1
+
+# Stable, reproducible fuzz smoke tests (also included in the normal Rust suite).
+fuzz-smoke:
+    cargo test --locked -p ghostty-vt parser_fuzz -- --test-threads=1
+
+# Coverage-guided ASan runs require cargo-fuzz and a nightly Rust toolchain.
+# Setup: cargo install cargo-fuzz --locked; rustup toolchain install nightly --profile minimal
+fuzz-parser seconds='60':
+    cargo +nightly fuzz run parser_chunking -- -max_total_time={{quote(seconds)}} -max_len=4096 -dict=fuzz/terminal.dict -timeout=10 -rss_limit_mb=2048
+
+fuzz-parser-operations seconds='60':
+    cargo +nightly fuzz run parser_operations -- -max_total_time={{quote(seconds)}} -max_len=4096 -dict=fuzz/terminal.dict -timeout=10 -rss_limit_mb=2048

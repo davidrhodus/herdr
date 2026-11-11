@@ -739,7 +739,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             // If the entire buffer is valid, use the first character and continue parsing.
             Ok(parsed) => {
                 let c = unsafe { parsed.chars().next().unwrap_unchecked() };
-                performer.print(c);
+                Self::dispatch_codepoint(performer, c);
 
                 self.partial_utf8_len = 0;
                 c.len_utf8() - old_bytes
@@ -755,10 +755,10 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                         parsed.chars().next().unwrap_unchecked()
                     };
 
-                    performer.print(c);
+                    Self::dispatch_codepoint(performer, c);
 
                     self.partial_utf8_len = 0;
-                    return valid_bytes - old_bytes;
+                    return c.len_utf8() - old_bytes;
                 }
 
                 match err.error_len() {
@@ -774,6 +774,14 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                     None => to_copy,
                 }
             }
+        }
+    }
+
+    #[inline]
+    fn dispatch_codepoint<P: Perform>(performer: &mut P, c: char) {
+        match c {
+            '\x00'..='\x1f' | '\u{80}'..='\u{9f}' => performer.execute(c as u8),
+            _ => performer.print(c),
         }
     }
 
@@ -809,10 +817,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             let Some(c) = text[offset..].chars().next() else {
                 break;
             };
-            match c {
-                '\x00'..='\x1f' | '\u{80}'..='\u{9f}' => performer.execute(c as u8),
-                _ => performer.print(c),
-            }
+            Self::dispatch_codepoint(performer, c);
             offset += c.len_utf8();
         }
     }
@@ -1714,15 +1719,32 @@ mod tests {
         .into_bytes()])
         {
             let mut bulk = Dispatcher::default();
-            Parser::<1024>::new_with_size().advance(&mut bulk, &input);
+            Parser::<1024>::default().advance(&mut bulk, &input);
             for chunk in 1..=input.len() {
                 let mut fragmented = Dispatcher::default();
-                let mut parser = Parser::<1024>::new_with_size();
+                let mut parser = Parser::<1024>::default();
                 for bytes in input.chunks(chunk) {
                     parser.advance(&mut fragmented, bytes);
                 }
                 assert_eq!(bulk.dispatched, fragmented.dispatched, "chunk {chunk}");
             }
         }
+    }
+    #[test]
+    fn partial_utf8_preserves_ascii_after_completed_codepoints_and_c1_dispatch() {
+        for input in [b"\xc2\x93".as_slice(), b"e\xcc\x81[\x81", b"\xc2\xa2a\xff"] {
+            let mut whole = Dispatcher::default();
+            Parser::<1024>::default().advance(&mut whole, input);
+            for split in 0..=input.len() {
+                let mut actual = Dispatcher::default();
+                let mut parser = Parser::<1024>::default();
+                parser.advance(&mut actual, &input[..split]);
+                parser.advance(&mut actual, &input[split..]);
+                assert_eq!(actual.dispatched, whole.dispatched, "split {split}");
+            }
+        }
+        let mut actual = Dispatcher::default();
+        Parser::<1024>::default().advance(&mut actual, b"\xc2\x93");
+        assert_eq!(actual.dispatched, [Sequence::Execute(0x93)]);
     }
 }
