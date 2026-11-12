@@ -35,6 +35,8 @@ impl ClientShellState {
         } else {
             Rect::new(0, 1, cols, rows.saturating_sub(2))
         };
+        let sync_sidebar = sidebar;
+        let sidebar = super::sync_badge::content_area(sidebar);
         let valid_navigation_target = self.mode == ClientShellMode::Navigate
             && self
                 .navigate_workspace_id
@@ -55,6 +57,7 @@ impl ClientShellState {
                     == Some(ClientEndpointStatus::Online)
         });
         let mut render_state = render::ShellRenderState {
+            sync_view: &self.sync_view,
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
@@ -149,6 +152,16 @@ impl ClientShellState {
             &self.config.palette,
             &mut self.hits,
         );
+        super::sync_badge::paint(
+            &mut buffer,
+            sync_sidebar,
+            &self.sync_view,
+            &self.config.palette,
+            &mut self.hits,
+        );
+        if !self.config.mouse_capture {
+            self.hits.sync_status = Rect::default();
+        }
         if let Some(notice) = &self.visible_endpoint_notice {
             self.hits.notification_toast = endpoint_notices::render_notice(
                 &mut buffer,
@@ -237,6 +250,7 @@ impl ClientShellState {
             snapshot,
             &self.config,
             render::ShellRenderState {
+                sync_view: &self.sync_view,
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,

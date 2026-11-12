@@ -482,7 +482,14 @@ fn long_machine_and_sync_lists_scroll_selected_targets_into_view() {
     };
     assert!(matches!(&manager.page,Page::Manage(p)if p.id==profiles[63].id));
     state.machine_action(Hit::Sync, &mut outcome);
-    for _ in 0..66 {
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    let target = super::super::machine_manager::menu_actions(manager)
+        .iter()
+        .position(|h| *h == Hit::UseServer(63))
+        .unwrap();
+    for _ in 0..target {
         press(&mut state, KeyCode::Down);
     }
     state.compose(80, 22).unwrap();
@@ -1253,4 +1260,70 @@ fn direct_sync_requests_do_not_interrupt_native_authentication_and_small_windows
     let mut denied = ClientShellInput::default();
     state.machine_action(Hit::Confirm, &mut denied);
     assert!(denied.actions.is_empty());
+}
+
+#[test]
+fn sync_badge_is_clickable_without_covering_sidebar_controls_or_resizing_panes() {
+    for collapsed in [false, true] {
+        let mut state = shell();
+        state.sidebar_collapsed = collapsed;
+        let before = state.surface_size(140, 48);
+        state.compose(140, 48).unwrap();
+        let badge = state.hits.sync_status;
+        assert!(!badge.is_empty());
+        assert!(!badge.intersects(state.hits.add_machine));
+        assert!(!badge.intersects(state.hits.sidebar_toggle));
+        assert!(!badge.intersects(state.hits.workspace_body));
+        assert!(!badge.intersects(state.hits.agent_body));
+        assert_eq!(before, state.surface_size(140, 48));
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: badge.x,
+            row: badge.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        assert!(outcome.repaint);
+        assert!(
+            matches!(&state.overlay,Some(ClientShellOverlay::Machines(m)) if matches!(m.page,Page::Sync))
+        );
+    }
+}
+#[test]
+fn sync_details_update_without_repainting_closed_modal_and_preserve_selected_action() {
+    let mut state = shell();
+    let mut view = crate::client::sync_status::View::default();
+    state.receive_sync_status(view.clone());
+    view.details = "Updated age".into();
+    assert!(!state.receive_sync_status(view.clone()));
+    state.open_sync_status(&mut ClientShellInput::default());
+    if let Some(ClientShellOverlay::Machines(m)) = state.overlay.as_mut() {
+        m.selected = super::super::machine_manager::menu_actions(m)
+            .iter()
+            .position(|h| *h == Hit::RefreshSync)
+            .unwrap();
+    }
+    view.details = "More\nmanager\nstatus\nlines".into();
+    assert!(state.receive_sync_status(view));
+    let Some(ClientShellOverlay::Machines(m)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(
+        super::super::machine_manager::menu_actions(m)[m.selected],
+        Hit::RefreshSync
+    );
+    let result = press(&mut state, KeyCode::Enter);
+    assert!(result.actions.iter().any(|a| matches!(
+        a,
+        ClientShellAction::MachineManager(Command::RefreshStatus { .. })
+    )));
+}
+#[test]
+fn sync_badge_is_present_without_active_surface_and_disabled_when_mouse_is_off() {
+    let mut state = shell();
+    state.select_unavailable_local();
+    state.compose(140, 48).unwrap();
+    assert!(!state.hits.sync_status.is_empty());
+    state.config.mouse_capture = false;
+    state.compose(140, 48).unwrap();
+    assert!(state.hits.sync_status.is_empty());
 }

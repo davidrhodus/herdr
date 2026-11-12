@@ -169,6 +169,13 @@ pub(super) fn host_identity(target: &str) -> io::Result<Option<String>> {
     )?;
     Ok(Some(binding.registry_id))
 }
+pub(crate) fn host_report(target: &str) -> io::Result<serde_json::Value> {
+    let (directory, binding) =
+        ensure(target)?.ok_or_else(|| io::Error::other("Shared-list host is not configured"))?;
+    let value = transport::json_request(target, &directory, STATUS, &[])?;
+    check_status(&value, &binding)?;
+    Ok(value)
+}
 pub(super) fn exchange(
     target: &str,
     document: &herdr_sync::Document,

@@ -697,6 +697,13 @@ impl ClientShellState {
         }
         if self.overlay.is_none()
             && mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && super::contains(self.hits.sync_status, point)
+        {
+            self.open_sync_status(outcome);
+            return;
+        }
+        if self.overlay.is_none()
+            && mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && super::contains(self.hits.add_machine, point)
         {
             self.open_add_server(outcome);

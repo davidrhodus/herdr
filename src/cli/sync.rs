@@ -89,6 +89,7 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
         }
     };
     result.map_err(std::io::Error::other)?;
+    let _ = catalog_sync::monitor::refresh();
     println!("{}", catalog_sync::status().map_err(std::io::Error::other)?);
     Ok(0)
 }

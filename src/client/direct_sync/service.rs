@@ -381,6 +381,7 @@ impl Owner {
             self.spawn(root, move |root, ctx, _| {
                 let result = super::super::machine_setup::tailscale::network().and_then(|net| {
                     store::bind_identity(root, &net.own.id)?;
+                    super::super::sync_status::remember_network(root, &net);
                     Ok(net)
                 });
                 if let Ok(mut current) = ctx.lock() {

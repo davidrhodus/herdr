@@ -5,6 +5,29 @@ pub(super) fn watch_profiles(
     should_quit: Arc<AtomicBool>,
 ) {
     direct_sync::start_worker(event_tx.clone(), should_quit.clone());
+    let status_tx = event_tx.clone();
+    let status_quit = should_quit.clone();
+    std::thread::spawn(move || {
+        let mut previous = None;
+        while !status_quit.load(Ordering::Acquire) {
+            let view = super::sync_status::view();
+            if previous.as_ref() != Some(&view) {
+                previous = Some(view.clone());
+                if status_tx
+                    .blocking_send(ClientLoopEvent::SyncStatus(view))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            for _ in 0..5 {
+                if status_quit.load(Ordering::Acquire) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    });
     // One bounded read per second per client, independent of rendering and pane count.
     std::thread::spawn(move || {
         let mut previous = None;

@@ -77,8 +77,16 @@ fn dispatch(
             let state = load(root)?
                 .filter(|state| state.source == Source::Local && state.device == registry)
                 .ok_or("Shared registry changed or is disabled")?;
+            let catalog = EndpointCatalog::load_from_path(&root.join("endpoints.json"))?;
+            let current = state.pending_projection.is_none() && state.baseline == catalog.ssh;
+            let managers = receipts::status(root, registry, &state.document, current);
+            let checked_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
             writeln!(output, "\n{MARKER}").map_err(|e| e.to_string())?;
-            serde_json::to_writer(&mut *output, &serde_json::json!({"enabled":true,"source":{"kind":"local"},"registry_id":state.device,"key_fingerprint":fingerprint,"restricted_sync_v1":true})).map_err(|e| e.to_string())?;
+            serde_json::to_writer(&mut *output, &serde_json::json!({"enabled":true,"source":{"kind":"local"},"registry_id":state.device,"key_fingerprint":fingerprint,"restricted_sync_v1":true,
+                "manager_report_v1":true,"checked_at":checked_at,"catalog_digest":receipts::digest(&state.document)?,"managers":managers})).map_err(|e| e.to_string())?;
             output.flush().map_err(|e| e.to_string())
         }
         EXCHANGE => {
@@ -222,5 +230,52 @@ mod tests {
         )
         .is_err());
         assert!(load(&temp.0).unwrap().unwrap().document.records.is_empty());
+    }
+    #[test]
+    fn restricted_status_exposes_receipts_and_invalidates_unpublished_host_edits() {
+        let temp = Temp::new();
+        let registry = "a".repeat(32);
+        let fp = format!("SHA256:{}", "a".repeat(43));
+        let mut state = SyncState {
+            version: 1,
+            source: Source::Local,
+            device: registry.clone(),
+            document: Document::default(),
+            baseline: vec![],
+            pending_projection: None,
+            last_success: None,
+            last_error: None,
+        };
+        save(&temp.0, &state).unwrap();
+        receipts::record_authenticated(
+            &temp.0,
+            &registry,
+            "100.1.1.1 1234 100.1.1.2 22",
+            &state.document,
+            &state.document,
+            Some(&fp),
+        )
+        .unwrap();
+        for pending in [false, true] {
+            state.pending_projection = pending.then(Vec::new);
+            save(&temp.0, &state).unwrap();
+            let mut out = Vec::new();
+            dispatch(
+                &temp.0,
+                &registry,
+                &fp,
+                STATUS,
+                None,
+                &mut &b""[..],
+                &mut out,
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            let value: serde_json::Value =
+                serde_json::from_str(text.split(MARKER).nth(1).unwrap().trim()).unwrap();
+            assert_eq!(value["manager_report_v1"], true);
+            assert_eq!(value["managers"][0]["key_fingerprint"], fp);
+            assert_eq!(value["managers"][0]["in_sync"], !pending);
+        }
     }
 }

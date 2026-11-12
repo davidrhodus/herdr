@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{EndpointCatalog, ProfileId, SavedSshEndpoint};
 mod automatic;
+pub(crate) mod monitor;
 mod receipts;
 pub(crate) mod restricted;
 pub(crate) use automatic::enable as enable_automatic;
@@ -419,7 +420,10 @@ pub(crate) fn start_worker(quit: Arc<AtomicBool>) {
                         }
                         previous_error = Some(error);
                     }
-                    Ok(_) => previous_error = None,
+                    Ok(_) => {
+                        previous_error = None;
+                        monitor::schedule_at(&root);
+                    }
                 }
             }
             for _ in 0..15 {

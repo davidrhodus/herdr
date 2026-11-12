@@ -222,8 +222,16 @@ access still has its normal SSH privileges; this restriction limits the sync
 credential, not an attacker who controls the entire Mac account.
 
 `herdr sync status --json` shows the selected source, last success or error,
-registry identity when hosting, and background-service heartbeat. The sync
-screen also shows whether background sync is running and using a restricted key.
+registry identity when hosting, and background-service heartbeat. The sidebar has a clickable **Sync** status. Green means at least two distinct
+restricted keys have fresh, matching server-list exchanges, including this
+computer. Click it to see manager names (when Tailscale knows them), IPs, last
+exchange ages, and full key fingerprints. Names and IPs are display hints;
+fingerprints identify the credentials. Pending changes, stale or unavailable
+reports, and active older clients using login keys prevent a green status.
+Status updates automatically; **Refresh manager status (Ctrl+R)** checks again.
+The shared host must run a build supporting manager status reports; older hosts
+continue syncing but show an upgrade notice instead of verified status.
+The screen also shows whether background sync is running.
 The JSON `sync_key` field includes enrollment state and its public fingerprint. Use
 `herdr sync background start|stop|status` to manage the login service.
 **Stop sharing** / `herdr sync leave` preserves the local server list and disables

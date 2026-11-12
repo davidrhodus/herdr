@@ -25,7 +25,7 @@ fn now() -> u64 {
         .as_secs()
 }
 
-fn digest(document: &Document) -> Result<String, String> {
+pub(super) fn digest(document: &Document) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     // Record order is not significant in v1 documents.
     let canonical = document.merge(&Document::default())?;

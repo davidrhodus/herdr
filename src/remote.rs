@@ -11,6 +11,7 @@ pub(crate) mod setup_progress;
 #[cfg(unix)]
 mod ssh_agent;
 mod sync_keys;
+pub(crate) use sync_keys::host_report as catalog_host_report;
 pub(crate) use sync_keys::status as sync_key_status;
 
 pub(crate) use args::*;

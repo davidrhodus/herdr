@@ -64,6 +64,8 @@ pub(super) struct Manager {
 pub(super) enum Hit {
     Hint,
     ManagerSync,
+    RefreshSync,
+    SyncStatusLine(usize),
     FindManagers,
     SyncManagers,
     PairManager(usize),
@@ -176,6 +178,26 @@ impl ClientShellState {
         }
         repaint
     }
+    pub(crate) fn receive_sync_status(&mut self, view: crate::client::sync_status::View) -> bool {
+        let mut repaint = self.sync_view.badge != view.badge
+            || self.sync_view.compact != view.compact
+            || self.sync_view.level != view.level;
+        if let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() {
+            if matches!(manager.page, Page::Sync) && manager.sync != view.details {
+                let selected = menu_actions(manager).get(manager.selected).copied();
+                manager.sync = view.details.clone();
+                manager.selected = selected
+                    .and_then(|hit| menu_actions(manager).iter().position(|h| *h == hit))
+                    .unwrap_or(0);
+                repaint = true;
+            }
+        }
+        self.sync_view = view;
+        repaint
+    }
+    pub(super) fn open_sync_status(&mut self, outcome: &mut ClientShellInput) {
+        self.open_machine_page(Page::Sync, outcome);
+    }
     pub(crate) fn open_machine_manager(&mut self, outcome: &mut ClientShellInput) {
         self.open_machine_page(Page::Servers, outcome);
     }
@@ -206,6 +228,7 @@ impl ClientShellState {
     fn open_machine_page(&mut self, page: Page, outcome: &mut ClientShellInput) {
         let mut manager = Manager::new(page, self.machine_profiles.clone());
         manager.direct = self.direct_sync.clone();
+        manager.sync = self.sync_view.details.clone();
         let id = manager.id;
         self.overlay = Some(ClientShellOverlay::Machines(Box::new(manager)));
         self.chrome_drag = None;
@@ -557,6 +580,8 @@ impl ClientShellState {
                     text: format!("Remove {} from the server list? This also removes the shared entry when sharing is enabled. Running sessions stay running.", profile.label),
                 };
             },
+            Hit::RefreshSync => outcome.actions.push(ClientShellAction::MachineManager(Command::RefreshStatus { id: manager.id })),
+            Hit::SyncStatusLine(_) => {},
             Hit::Sync => {
                 manager.page = Page::Sync;
                 outcome.actions.push(ClientShellAction::MachineManager(Command::Status { id: manager.id }));
@@ -762,6 +787,10 @@ impl ClientShellState {
                             self.machine_action(Hit::Add, outcome);
                             return true;
                         }
+                        KeyCode::Char('r') if matches!(manager.page, Page::Sync) => {
+                            self.machine_action(Hit::RefreshSync, outcome);
+                            return true;
+                        }
                         KeyCode::Char('r')
                             if matches!(manager.page, Page::Done) && !manager.success =>
                         {
@@ -897,7 +926,7 @@ fn filtered_suggestions(manager: &Manager) -> Vec<usize> {
         .map(|(n, _)| n)
         .collect()
 }
-fn menu_actions(manager: &Manager) -> Vec<Hit> {
+pub(super) fn menu_actions(manager: &Manager) -> Vec<Hit> {
     match &manager.page {
         Page::Managers => manager_sync::rows(&manager.direct)
             .into_iter()
@@ -927,7 +956,11 @@ fn menu_actions(manager: &Manager) -> Vec<Hit> {
             Hit::Sync,
         ],
         Page::Sync => [
-            vec![Hit::ManagerSync, Hit::Host, Hit::Join],
+            vec![Hit::ManagerSync],
+            (0..manager.sync.lines().count())
+                .map(Hit::SyncStatusLine)
+                .collect(),
+            vec![Hit::RefreshSync, Hit::Host, Hit::Join],
             (0..manager.profiles.len()).map(Hit::UseServer).collect(),
             vec![Hit::SyncNow, Hit::Leave],
         ]
@@ -1046,7 +1079,7 @@ pub(super) fn render(
                         1
                     }
                 }
-                Page::Sync => manager.sync.lines().count(),
+
                 _ => 0,
             })
             .saturating_sub(visible.saturating_sub(1))
@@ -1238,9 +1271,10 @@ pub(super) fn render(
                     Hit::ManagerSync,
                     false,
                 );
-                for line in manager.sync.lines() {
-                    row(line, Hit::Field(0), false);
+                for (n, line) in manager.sync.lines().enumerate() {
+                    row(line, Hit::SyncStatusLine(n), false);
                 }
+                row("Refresh manager status (Ctrl+R)", Hit::RefreshSync, false);
                 row("Host shared list on this computer…", Hit::Host, false);
                 row("Join using an SSH address…", Hit::Join, false);
                 for (n, p) in manager.profiles.iter().enumerate() {

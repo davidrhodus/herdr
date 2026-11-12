@@ -143,6 +143,9 @@ pub(crate) enum Command {
         id: u64,
         request: u64,
     },
+    RefreshStatus {
+        id: u64,
+    },
     Status {
         id: u64,
     },
@@ -184,6 +187,7 @@ impl std::fmt::Debug for Command {
             Self::TerminalImport { id, .. } => ("TerminalImport", id),
             Self::Direct { .. } => return f.write_str("Direct manager action"),
             Self::Tailscale { id, .. } => ("Tailscale", id),
+            Self::RefreshStatus { id } => ("RefreshStatus", id),
             Self::Status { id } => ("Status", id),
             Self::Discover { id } => ("Discover", id),
             Self::Run { id, .. } => ("Run", id),
@@ -349,6 +353,17 @@ fn run(commands: mpsc::Receiver<Command>, events: mpsc::SyncSender<Event>) {
                     });
                 });
             }
+            Command::RefreshStatus { id } => {
+                let events = events.clone();
+                std::thread::spawn(move || {
+                    let result = super::endpoint::catalog_sync::monitor::refresh();
+                    let mut text = sync_status();
+                    if let Err(error) = result {
+                        text.push_str(&format!("\nStatus refresh failed: {error}"));
+                    }
+                    let _ = events.send(Event::Status { id, text });
+                });
+            }
             Command::Status { id } => {
                 let _ = events.send(Event::Status {
                     id,
@@ -466,53 +481,7 @@ impl Drop for SetupFiles {
     }
 }
 fn sync_status() -> String {
-    let summary = match crate::client::endpoint::catalog_sync::status() {
-        Ok(value) if value["enabled"] == false && value["automatic"] == true => {
-            "Automatic sync: waiting for an enabled shared-list host".into()
-        }
-        Ok(value) if value["enabled"] == false => "Server-list sync is off".into(),
-        Ok(value) if value["source"]["kind"] == "direct" => {
-            "Direct manager sync is enabled over Tailscale".into()
-        }
-        Ok(value) if value["source"]["kind"] == "local" => {
-            "Shared list is hosted on this computer".into()
-        }
-        Ok(value) => {
-            let target = value["source"]["target"].as_str().unwrap_or("peer");
-            let success = value["last_success"].as_u64().map_or_else(
-                || "Not synced yet".into(),
-                |at| {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let age = now.saturating_sub(at);
-                    if age < 60 {
-                        "Last synced just now".into()
-                    } else {
-                        format!("Last synced {} minutes ago", age / 60)
-                    }
-                },
-            );
-            let error = value["last_error"]
-                .as_str()
-                .map(|e| format!("\nConnection error: {}", e.replace(['\n', '\r'], " ")))
-                .unwrap_or_default();
-            let credential = if value["sync_key"]["enrolled"] == true {
-                "Restricted sync-only SSH key"
-            } else {
-                "Preparing restricted sync-only SSH key"
-            };
-            format!("Shared list from {target}\n{success}\n{credential}{error}")
-        }
-        Err(_) => "Shared-list status is unavailable".into(),
-    };
-    let background = if super::sync_background::status()["running"] == true {
-        "Background sync is running; the TUI can be closed"
-    } else {
-        "Sync is active while this TUI is open"
-    };
-    format!("{summary}\n{background}")
+    super::sync_status::view().details
 }
 struct OwnedChild {
     child: Box<dyn portable_pty::Child + Send + Sync>,

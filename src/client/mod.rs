@@ -38,6 +38,7 @@ mod shell_runtime;
 mod startup;
 mod state;
 pub(crate) mod sync_background;
+pub(crate) mod sync_status;
 mod terminal_geometry;
 mod terminal_sessions;
 mod terminal_setup;
@@ -874,6 +875,19 @@ async fn run_client_loop(
                 }
             }
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
+            ClientLoopEvent::SyncStatus(view) => {
+                let repaint = state
+                    .shell
+                    .as_mut()
+                    .is_some_and(|shell| shell.receive_sync_status(view));
+                if repaint {
+                    if let Some(frame) = state.shell.as_mut().and_then(|shell| {
+                        shell.compose(state.reported_size.0, state.reported_size.1)
+                    }) {
+                        state.present_frame(frame);
+                    }
+                }
+            }
             ClientLoopEvent::DirectSync(view) => {
                 let repaint = state
                     .shell

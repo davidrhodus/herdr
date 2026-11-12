@@ -230,6 +230,7 @@ pub(super) fn render_mode_bar(
 }
 
 pub(super) struct ShellRenderState<'a> {
+    pub(super) sync_view: &'a crate::client::sync_status::View,
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
@@ -258,6 +259,7 @@ pub(super) fn render_shell(
     mut state: ShellRenderState<'_>,
 ) -> ShellHitMap {
     let mut hits = ShellHitMap::default();
+    let sidebar = super::sync_badge::content_area(layout.sidebar);
     if layout.mobile_header.height > 0 {
         super::mobile::render_mobile_header(
             buffer,
@@ -271,16 +273,12 @@ pub(super) fn render_shell(
         if state.endpoints.len() > 1 {
             if state.sidebar_collapsed {
                 super::endpoint_sidebar::render_collapsed(
-                    buffer,
-                    layout.sidebar,
-                    config,
-                    &mut state,
-                    &mut hits,
+                    buffer, sidebar, config, &mut state, &mut hits,
                 );
             } else {
                 super::endpoint_sidebar::render_expanded(
                     buffer,
-                    layout.sidebar,
+                    sidebar,
                     Some(snapshot),
                     config,
                     &mut state,
@@ -290,7 +288,7 @@ pub(super) fn render_shell(
         } else if state.sidebar_collapsed {
             render_collapsed_sidebar(
                 buffer,
-                layout.sidebar,
+                sidebar,
                 snapshot,
                 config,
                 state
@@ -299,17 +297,17 @@ pub(super) fn render_shell(
                 &mut hits,
             );
         } else {
-            render_sidebar(
-                buffer,
-                layout.sidebar,
-                snapshot,
-                config,
-                &mut state,
-                &mut hits,
-            );
+            render_sidebar(buffer, sidebar, snapshot, config, &mut state, &mut hits);
         }
     }
-    super::machine_manager::paint_launcher(buffer, layout.sidebar, &config.palette, &mut hits);
+    super::machine_manager::paint_launcher(buffer, sidebar, &config.palette, &mut hits);
+    super::sync_badge::paint(
+        buffer,
+        layout.sidebar,
+        state.sync_view,
+        &config.palette,
+        &mut hits,
+    );
     if layout.tab_bar.height > 0 {
         render_tab_bar(
             buffer,
@@ -330,6 +328,7 @@ pub(super) fn render_shell(
         hits.agent_sort_toggle = Rect::default();
         hits.new_workspace = Rect::default();
         hits.add_machine = Rect::default();
+        hits.sync_status = Rect::default();
         hits.machines.clear();
         hits.workspaces.clear();
         hits.agents.clear();
