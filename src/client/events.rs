@@ -2,6 +2,7 @@ use super::*;
 
 /// Internal events for the client event loop.
 pub(super) enum ClientLoopEvent {
+    DirectSync(direct_sync::View),
     #[cfg(unix)]
     StdinInput(Vec<u8>),
     #[cfg(unix)]

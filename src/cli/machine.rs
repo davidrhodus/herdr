@@ -11,13 +11,15 @@ const HELP: &str = "Usage:
   herdr machine list [--json]
   herdr machine status [<label-or-id>] [--json]
   herdr machine reconnect <label-or-id>
-  herdr machine add <ssh-target> [--label <label>] [--remote-session <name>]
+  herdr machine update <label-or-id>
+  herdr machine setup-key <label-or-id>
+  herdr machine add <ssh-target> [--label <label>] [--remote-session <name>] [--setup-key]
   herdr machine rename <profile-id> --label <label>
   herdr machine remove <profile-id>
   herdr machine enable <profile-id>
   herdr machine disable <profile-id>
 
-Add prepares the remote Herdr installation and starts its server before saving.
+Add, reconnect, and update prepare the remote Herdr installation and start its server.
 Missing or incompatible installations require approval in an interactive terminal.
 Changes apply automatically to open local Herdr clients.
 Removing or disabling a machine leaves its remote sessions running.
@@ -39,6 +41,9 @@ pub(super) fn run_machine_command(args: &[String]) -> std::io::Result<i32> {
         Some("list") => list(&args[1..]),
         Some("status") => status(&args[1..]),
         Some("reconnect") => reconnect(&args[1..]),
+        Some("update") => update(&args[1..]),
+        Some("setup-key") => setup_key(&args[1..]),
+        Some("enable-imports") => enable_imports(&args[1..]),
         Some("add") => add(&args[1..]),
         Some("rename") => rename(&args[1..]),
         Some("remove") => remove(&args[1..]),
@@ -177,9 +182,73 @@ fn status(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn reconnect(args: &[String]) -> std::io::Result<i32> {
+    prepare_saved(args, "reconnect")
+}
+
+fn update(args: &[String]) -> std::io::Result<i32> {
+    prepare_saved(args, "update")
+}
+
+fn setup_key(args: &[String]) -> std::io::Result<i32> {
+    let [selector] = args else {
+        eprintln!("usage: herdr machine setup-key <label-or-id>");
+        return Ok(2);
+    };
+    if !std::io::stdin().is_terminal() {
+        return Err(std::io::Error::other(
+            "SSH key setup requires an interactive terminal for the existing SSH password",
+        ));
+    }
+    let catalog = load_catalog()?;
+    let profile =
+        super::target::resolve_machine(&catalog.ssh, selector).map_err(std::io::Error::other)?;
+    let identity = crate::remote::key_setup::run(&profile.target)?;
+    let metadata =
+        crate::remote::SavedSshSetup::connect_with_identity(&profile.target, Some(&identity))?
+            .prepare(&profile.session)?;
+    if let Some(metadata) = metadata {
+        crate::client::endpoint::SshMetadataCache::new(
+            profile.id.as_str(),
+            &profile.target,
+            &profile.session,
+        )?
+        .store(&metadata);
+    }
+    println!("Server connection repaired. Open Herdr clients retry automatically.");
+    Ok(0)
+}
+
+fn enable_imports(args: &[String]) -> std::io::Result<i32> {
+    let selector = match args {
+        [selector] => selector,
+        [selector, expected_target, _, expected_session, _]
+            if expected_target == "--expected-target"
+                && expected_session == "--expected-session" =>
+        {
+            selector
+        }
+        _ => {
+            return Err(std::io::Error::other(
+                "usage: herdr machine enable-imports <server>",
+            ))
+        }
+    };
+    let catalog = load_catalog()?;
+    let profile =
+        super::target::resolve_machine(&catalog.ssh, selector).map_err(std::io::Error::other)?;
+    if args.len() == 5 && (profile.target != args[2] || profile.session != args[4]) {
+        return Err(std::io::Error::other(
+            "Server entry changed; refresh before enabling imports",
+        ));
+    }
+    crate::remote::enable_terminal_imports(&profile.target)?;
+    Ok(0)
+}
+
+fn prepare_saved(args: &[String], action: &str) -> std::io::Result<i32> {
     use std::io::IsTerminal;
     let [selector] = args else {
-        eprintln!("usage: herdr machine reconnect <label-or-id>");
+        eprintln!("usage: herdr machine {action} <label-or-id>");
         return Ok(2);
     };
     let catalog = load_catalog()?;
@@ -191,13 +260,27 @@ fn reconnect(args: &[String]) -> std::io::Result<i32> {
         }
     };
     if !std::io::stdin().is_terminal() {
-        eprintln!("reconnect requires an interactive terminal; use herdr machine status for noninteractive checks");
+        eprintln!("{action} requires an interactive terminal; use herdr machine status for noninteractive checks");
         return Ok(2);
     }
     let mut authentication = crate::remote::ssh_authentication_command(&profile.target)?;
     if !authentication.command.status()?.success() {
         eprintln!("SSH authentication failed; the saved machine was not changed.");
         return Ok(1);
+    }
+    let setup = crate::remote::SavedSshSetup::connect(&profile.target)?;
+    let metadata = if action == "update" {
+        setup.prepare_update(&profile.session)?
+    } else {
+        setup.prepare(&profile.session)?
+    };
+    if let Some(metadata) = metadata {
+        crate::client::endpoint::SshMetadataCache::new(
+            profile.id.as_str(),
+            &profile.target,
+            &profile.session,
+        )?
+        .store(&metadata);
     }
     crate::remote::check_saved_ssh(&profile.target, &profile.session)?;
     println!(
@@ -212,6 +295,7 @@ struct AddArgs {
     target: String,
     label: Option<String>,
     session: Option<String>,
+    setup_key: bool,
 }
 
 fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
@@ -219,9 +303,15 @@ fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
     let mut target = None;
     let mut label = None;
     let mut session = None;
+    let mut setup_key = false;
     let mut index = 0;
     while index < args.len() {
         let (name, value) = match args[index].as_str() {
+            "--setup-key" if !setup_key => {
+                setup_key = true;
+                index += 1;
+                continue;
+            }
             "--label" | "--remote-session" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err(format!("missing value for {}", args[index]));
@@ -258,6 +348,7 @@ fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
         target,
         label,
         session,
+        setup_key,
     })
 }
 
@@ -301,6 +392,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
         target,
         label,
         session,
+        setup_key,
     } = match parse_add_args(args) {
         Ok(args) => args,
         Err(error) => {
@@ -308,27 +400,40 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    let identity = if setup_key {
+        if !std::io::stdin().is_terminal() {
+            return Err(std::io::Error::other(
+                "Automatic SSH key setup requires an interactive terminal",
+            ));
+        }
+        Some(crate::remote::key_setup::run(&target)?)
+    } else {
+        None
+    };
     let mut setup = None;
-    let session =
-        if session.is_none() && std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
-            let discovered = (|| {
-                let connection = crate::remote::SavedSshSetup::connect(&target)?;
-                let sessions = connection.running_sessions()?;
-                let session = select_remote_session(&sessions, &target)?;
-                setup = Some(connection);
-                Ok::<_, std::io::Error>(session)
-            })();
-            match discovered {
-                Ok(session) => session,
-                Err(error) => {
-                    eprintln!("error: {error}; machine was not saved");
-                    crate::remote::print_saved_ssh_error_hint(&error, &target);
-                    return Ok(1);
-                }
+    let session = if session.is_none()
+        && std::io::stdin().is_terminal()
+        && std::io::stderr().is_terminal()
+    {
+        let discovered = (|| {
+            let connection =
+                crate::remote::SavedSshSetup::connect_with_identity(&target, identity.as_deref())?;
+            let sessions = connection.running_sessions()?;
+            let session = select_remote_session(&sessions, &target)?;
+            setup = Some(connection);
+            Ok::<_, std::io::Error>(session)
+        })();
+        match discovered {
+            Ok(session) => session,
+            Err(error) => {
+                eprintln!("error: {error}; machine was not saved");
+                crate::remote::print_saved_ssh_error_hint(&error, &target);
+                return Ok(1);
             }
-        } else {
-            session.unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned())
-        };
+        }
+    } else {
+        session.unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned())
+    };
     let label_is_default = label.is_none();
     let label = label.unwrap_or_else(|| default_label(&target, &session));
     let mut catalog = load_catalog()?;
@@ -347,7 +452,9 @@ fn add(args: &[String]) -> std::io::Result<i32> {
     }
     let metadata = match setup
         .map(Ok)
-        .unwrap_or_else(|| crate::remote::SavedSshSetup::connect(&target))
+        .unwrap_or_else(|| {
+            crate::remote::SavedSshSetup::connect_with_identity(&target, identity.as_deref())
+        })
         .and_then(|setup| setup.prepare(&session))
     {
         Ok(metadata) => metadata,
@@ -381,6 +488,15 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
+    if let Some(identity) =
+        crate::remote::device_identity::setup_identity(&target).filter(|_| !setup_key)
+    {
+        crate::remote::device_identity::set(&target, &identity.to_string_lossy()).map_err(|e| {
+            std::io::Error::other(format!(
+                "Server saved, but local SSH key settings could not be saved: {e}"
+            ))
+        })?;
+    }
     if let Some(metadata) = metadata {
         crate::client::endpoint::SshMetadataCache::new(id.as_str(), &target, &session)?
             .store(&metadata);
@@ -397,6 +513,7 @@ fn select_remote_session(sessions: &[String], target: &str) -> std::io::Result<S
         _ => {}
     }
 
+    crate::remote::setup_progress::emit(crate::remote::setup_progress::Phase::Choosing);
     let _raw_mode = RawModeGuard::enable()?;
     let mut output = std::io::stderr();
     let mut selected = 0;
@@ -446,12 +563,25 @@ fn render_remote_session_picker(
     selected: usize,
     redraw: bool,
 ) -> std::io::Result<()> {
-    if redraw {
-        execute!(output, cursor::MoveUp((sessions.len() + 2) as u16))?;
+    let visible = terminal::size()
+        .map(|(_, rows)| usize::from(rows.saturating_sub(4).max(1)))
+        .unwrap_or(20)
+        .min(sessions.len());
+    let start = selected
+        .saturating_sub(visible.saturating_sub(1))
+        .min(sessions.len().saturating_sub(visible));
+    if std::env::var_os(crate::remote::setup_progress::ENV).is_some() {
+        execute!(
+            output,
+            cursor::MoveTo(0, 0),
+            terminal::Clear(terminal::ClearType::All)
+        )?;
+    } else if redraw {
+        execute!(output, cursor::MoveUp((visible + 2) as u16))?;
     }
     execute!(output, terminal::Clear(terminal::ClearType::CurrentLine))?;
     write!(output, "Running sessions on {target}:\r\n")?;
-    for (index, session) in sessions.iter().enumerate() {
+    for (index, session) in sessions.iter().enumerate().skip(start).take(visible) {
         execute!(output, terminal::Clear(terminal::ClearType::CurrentLine))?;
         if index == selected {
             execute!(output, SetAttribute(Attribute::Bold))?;
@@ -576,7 +706,12 @@ fn load_catalog() -> std::io::Result<EndpointCatalog> {
 }
 
 fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
-    catalog.store_profiles().map_err(std::io::Error::other)
+    catalog.store_profiles().map_err(std::io::Error::other)?;
+    // The local change is durable even when the sync peer is unavailable.
+    if let Err(error) = crate::client::endpoint::catalog_sync::sync_once() {
+        eprintln!("Machine saved locally; peer sync is pending: {error}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -614,6 +749,7 @@ mod tests {
                     target: "workstation.coder".into(),
                     label: Some("coder".into()),
                     session: session.map(str::to_owned),
+                    setup_key: false,
                 },
                 "{args:?}"
             );

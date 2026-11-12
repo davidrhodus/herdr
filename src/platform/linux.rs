@@ -1168,6 +1168,11 @@ fn process_session_id(pid: u32) -> Option<i32> {
     fields.get(3)?.parse().ok()
 }
 
+/// Installed Tailscale CLI when the executable is absent from PATH.
+pub(crate) fn tailscale_cli_fallback() -> Option<PathBuf> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

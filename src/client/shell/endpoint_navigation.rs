@@ -234,6 +234,9 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         outcome: &mut ClientShellInput,
     ) {
+        if self.authenticate_machine_selection(endpoint_id, outcome) {
+            return;
+        }
         if !self.retry_machine(endpoint_id) {
             let label = self.endpoint_label(endpoint_id).to_owned();
             self.receive_endpoint_unavailable(format!("{label} is not ready"));

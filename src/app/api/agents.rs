@@ -33,6 +33,49 @@ fn append_codex_paste_boundary(runtime: &crate::terminal::TerminalRuntime, text:
 }
 
 impl App {
+    /// A tracked job exclusively claims an idle agent before any durable reservation.
+    pub(super) fn tracked_agent_ready(
+        &self,
+        target: &str,
+    ) -> Result<crate::api::schema::AgentInfo, crate::api::schema::ErrorBody> {
+        let params = AgentPromptParams {
+            target: target.into(),
+            text: "tracked job".into(),
+            wait: None,
+        };
+        let checked = self
+            .validate_agent_prompt(String::new(), &params)
+            .map_err(prompt_error_body)?;
+        if !matches!(
+            checked.agent.agent_status,
+            crate::api::schema::AgentStatus::Idle | crate::api::schema::AgentStatus::Done
+        ) {
+            return Err(crate::api::schema::ErrorBody {
+                code: "agent_busy".into(),
+                message: "tracked jobs require an idle agent; wait for its current work to finish"
+                    .into(),
+            });
+        }
+        Ok(checked.agent)
+    }
+
+    pub(super) fn queue_tracked_prompt(
+        &mut self,
+        target: String,
+        text: String,
+    ) -> Result<std::sync::mpsc::Receiver<std::io::Result<()>>, crate::api::schema::ErrorBody> {
+        let params = AgentPromptParams {
+            target,
+            text,
+            wait: None,
+        };
+        let checked = self
+            .validate_agent_prompt(String::new(), &params)
+            .map_err(prompt_error_body)?;
+        self.submit_agent_prompt(checked, &params)
+            .map(|(_, _, receiver)| receiver)
+            .map_err(prompt_error_body)
+    }
     pub(super) fn handle_agent_list(&mut self, id: String) -> String {
         encode_success(
             id,
@@ -448,6 +491,15 @@ fn agent_not_found(id: String, target: &str) -> String {
         "agent_not_found",
         format!("agent target {target} not found"),
     )
+}
+
+fn prompt_error_body(encoded: String) -> crate::api::schema::ErrorBody {
+    serde_json::from_str::<crate::api::schema::ErrorResponse>(&encoded)
+        .map(|response| response.error)
+        .unwrap_or_else(|_| crate::api::schema::ErrorBody {
+            code: "agent_prompt_failed".into(),
+            message: encoded,
+        })
 }
 
 #[cfg(test)]

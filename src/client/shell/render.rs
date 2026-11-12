@@ -1,7 +1,7 @@
 use super::*;
 
 #[path = "../shell/overlays.rs"]
-mod overlays;
+pub(in crate::client::shell) mod overlays;
 #[path = "../shell/sidebar.rs"]
 pub(in crate::client::shell) mod sidebar;
 #[path = "../shell/tabs.rs"]
@@ -309,6 +309,7 @@ pub(super) fn render_shell(
             );
         }
     }
+    super::machine_manager::paint_launcher(buffer, layout.sidebar, &config.palette, &mut hits);
     if layout.tab_bar.height > 0 {
         render_tab_bar(
             buffer,
@@ -328,6 +329,7 @@ pub(super) fn render_shell(
         hits.agent_scrollbar = Rect::default();
         hits.agent_sort_toggle = Rect::default();
         hits.new_workspace = Rect::default();
+        hits.add_machine = Rect::default();
         hits.machines.clear();
         hits.workspaces.clear();
         hits.agents.clear();

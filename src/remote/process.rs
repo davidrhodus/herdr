@@ -118,7 +118,16 @@ pub(super) fn wait_with_output_timeout(
     wait_with_output(child, input, timeout, cancelled, None)
 }
 
-#[cfg(any(unix, test))]
+pub(super) fn wait_with_input_output_limit(
+    child: Child,
+    input: Vec<u8>,
+    timeout: Duration,
+    cancelled: Arc<AtomicBool>,
+    limit: usize,
+) -> io::Result<Output> {
+    wait_with_output(child, Some(input), timeout, cancelled, Some(limit))
+}
+
 pub(super) fn wait_with_output_limit(
     child: Child,
     timeout: Duration,

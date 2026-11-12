@@ -566,7 +566,15 @@ pub(crate) use unix_common::{
 };
 
 mod client_state;
-pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
+#[cfg(target_os = "linux")]
+#[path = "linux/terminal_import.rs"]
+pub(crate) mod terminal_import;
+#[cfg(not(target_os = "linux"))]
+#[path = "terminal_import_unsupported.rs"]
+pub(crate) mod terminal_import;
+pub(crate) use client_state::{
+    create_private_state_file, replace_file, sync_parent_directory, validate_private_key_path,
+};
 
 #[cfg(not(unix))]
 pub(crate) fn begin_cli_output() {}
@@ -1057,3 +1065,6 @@ pub(crate) fn shared_ssh_control_path(
         "interactive SSH recovery requires Unix OpenSSH multiplexing",
     ))
 }
+
+#[cfg(unix)]
+pub(crate) use unix_common::{cancel_setup_process, SetupProcessGroup};

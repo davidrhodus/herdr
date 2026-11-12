@@ -277,3 +277,20 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
 pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::Result<bool> {
     Ok(false)
 }
+
+#[cfg(not(unix))]
+#[cfg(not(unix))]
+pub(crate) struct SetupProcessGroup;
+#[cfg(not(unix))]
+impl SetupProcessGroup {
+    pub(crate) fn new(_pid: Option<u32>) -> Self {
+        Self
+    }
+}
+
+pub(crate) fn cancel_setup_process(_pid: Option<u32>) {}
+
+/// Installed Tailscale CLI when the executable is absent from PATH.
+pub(crate) fn tailscale_cli_fallback() -> Option<PathBuf> {
+    None
+}

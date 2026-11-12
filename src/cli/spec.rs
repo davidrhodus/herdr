@@ -35,6 +35,7 @@ pub(super) fn command() -> Command {
         .subcommand(config_command())
         .subcommand(channel_command())
         .subcommand(machine::command())
+        .subcommand(sync_command())
         .subcommand(server_command())
         .subcommand(api_command())
         .subcommand(workspace_command())
@@ -46,7 +47,10 @@ pub(super) fn command() -> Command {
         .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(integration_command())
-        .subcommand(plugin_command());
+        .subcommand(plugin_command())
+        .subcommand(super::tasks::command("task"))
+        .subcommand(super::tasks::command("job"))
+        .subcommand(super::tasks::command("workflow"));
     configure_help(command, 0)
 }
 
@@ -343,6 +347,45 @@ fn path_option(name: &'static str, value_name: &'static str) -> Arg {
 
 fn required(name: &'static str, value_name: &'static str) -> Arg {
     Arg::new(name).value_name(value_name).required(true)
+}
+
+fn sync_command() -> Command {
+    Command::new("sync")
+        .subcommand(
+            Command::new("check-v1")
+                .about("Check shared catalog transport support")
+                .hide(true),
+        )
+        .about("Share the server list between computers over SSH")
+        .subcommand(Command::new("host").about("Host a shared server list for this SSH user"))
+        .subcommand(
+            Command::new("join")
+                .about("Sync with a shared-list host over LAN, WAN, or Tailscale")
+                .arg(
+                    Arg::new("ssh-target")
+                        .value_name("SSH_TARGET")
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("leave").about("Stop syncing; keep local machines and remote sessions"),
+        )
+        .subcommand(
+            Command::new("status")
+                .about("Show peer sync status")
+                .arg(json_flag()),
+        )
+        .subcommand(Command::new("now").about("Synchronize the server list now"))
+        .subcommand(
+            Command::new("use")
+                .about("Prepare a shared-list host and join it over SSH")
+                .arg(Arg::new("ssh-target").required(true)),
+        )
+        .subcommand(
+            Command::new("exchange-v1")
+                .about("Exchange a version 1 shared catalog over SSH stdio")
+                .hide(true),
+        )
 }
 
 #[cfg(test)]

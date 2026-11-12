@@ -32,6 +32,7 @@ impl RetiredDirectGraphics {
 /// State tracking for the thin client.
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
+    pub(super) machine_setup: machine_setup::Runtime,
     pub(super) blit_encoder: render_ansi::BlitEncoder,
     pub(super) image_files: image_files::FileTransport,
     pub(super) mouse_capture_active: bool,
@@ -103,6 +104,7 @@ impl ClientState {
     #[cfg(test)]
     pub(super) fn test_new() -> Self {
         Self {
+            machine_setup: Default::default(),
             blit_encoder: render_ansi::BlitEncoder::new(),
             image_files: image_files::FileTransport::default(),
             mouse_capture_active: false,

@@ -9,7 +9,7 @@ use super::ProfileId;
 
 const CATALOG_VERSION: u32 = 1;
 const SELECTION_VERSION: u32 = 1;
-const MAX_CATALOG_BYTES: u64 = 64 * 1024;
+const MAX_CATALOG_BYTES: u64 = herdr_sync::MAX_CATALOG_BYTES as u64;
 const MAX_PROFILES: usize = 64;
 pub(crate) const MAX_LABEL_BYTES: usize = 128;
 const MAX_TARGET_BYTES: usize = 1024;
@@ -71,7 +71,7 @@ impl SavedSshEndpoint {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EndpointCatalog {
     version: u32,
@@ -79,6 +79,16 @@ pub(crate) struct EndpointCatalog {
     pub(crate) selected_profile: Option<ProfileId>,
     #[serde(default)]
     pub(crate) ssh: Vec<SavedSshEndpoint>,
+    #[serde(skip)]
+    pub(super) baseline: Option<Vec<SavedSshEndpoint>>,
+}
+
+impl PartialEq for EndpointCatalog {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.selected_profile == other.selected_profile
+            && self.ssh == other.ssh
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +104,7 @@ impl Default for EndpointCatalog {
             version: CATALOG_VERSION,
             selected_profile: None,
             ssh: Vec::new(),
+            baseline: None,
         }
     }
 }
@@ -105,7 +116,7 @@ impl EndpointCatalog {
 
     pub(crate) fn load_profiles() -> Result<Vec<SavedSshEndpoint>, String> {
         // Live clients keep their own selection, independent of other attached clients.
-        Self::load_from_path(&catalog_path()).map(|catalog| catalog.ssh)
+        Self::read_from_path(&catalog_path(), false).map(|catalog| catalog.ssh)
     }
 
     fn load_from_paths(catalog_path: &Path, selection_path: &Path) -> Result<Self, String> {
@@ -140,7 +151,7 @@ impl EndpointCatalog {
     }
 
     pub(crate) fn store_profiles(&self) -> Result<(), String> {
-        self.store_to_path(&catalog_path())
+        super::catalog_sync::store_profiles(self)
     }
 
     pub(crate) fn store_selection(&self) -> Result<(), String> {
@@ -243,7 +254,7 @@ impl EndpointCatalog {
         true
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub(super) fn validate(&self) -> Result<(), String> {
         if self.version != CATALOG_VERSION {
             return Err(format!(
                 "unsupported endpoint catalog version {}; expected {CATALOG_VERSION}",
@@ -273,7 +284,11 @@ impl EndpointCatalog {
         Ok(())
     }
 
-    fn load_from_path(path: &Path) -> Result<Self, String> {
+    pub(super) fn load_from_path(path: &Path) -> Result<Self, String> {
+        Self::read_from_path(path, true)
+    }
+
+    fn read_from_path(path: &Path, retain_baseline: bool) -> Result<Self, String> {
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -297,13 +312,16 @@ impl EndpointCatalog {
         if content.len() as u64 > MAX_CATALOG_BYTES {
             return Err("endpoint catalog exceeds the storage limit".into());
         }
-        let catalog: Self = serde_json::from_str(&content)
+        let mut catalog: Self = serde_json::from_str(&content)
             .map_err(|error| format!("stored endpoint catalog is invalid: {error}"))?;
         catalog.validate()?;
+        if retain_baseline {
+            catalog.baseline = Some(catalog.ssh.clone());
+        }
         Ok(catalog)
     }
 
-    fn store_to_path(&self, path: &Path) -> Result<(), String> {
+    pub(super) fn store_to_path(&self, path: &Path) -> Result<(), String> {
         self.validate()?;
         let content = serde_json::to_vec_pretty(self)
             .map_err(|error| format!("failed to encode endpoint catalog: {error}"))?;
@@ -331,7 +349,7 @@ fn load_selection_from_path(path: &Path) -> Result<Option<EndpointSelection>, St
     Ok(Some(selection))
 }
 
-pub(super) fn store_private_json(
+pub(crate) fn store_private_json(
     path: &Path,
     content: &[u8],
     description: &str,

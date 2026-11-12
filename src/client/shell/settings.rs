@@ -51,7 +51,7 @@ impl ClientShellState {
             ClientSettingsSection::Indicators => indicator_index(self.config.status_indicators),
             ClientSettingsSection::Sound => usize::from(!self.config.sound_enabled),
             ClientSettingsSection::Toast => toast_index(self.config.toast_delivery),
-            ClientSettingsSection::Integrations => 0,
+            ClientSettingsSection::Integrations | ClientSettingsSection::Machines => 0,
         }
     }
 
@@ -60,6 +60,11 @@ impl ClientShellState {
         section: ClientSettingsSection,
         outcome: &mut ClientShellInput,
     ) {
+        if section == ClientSettingsSection::Machines {
+            self.cancel_settings_overlay();
+            self.open_machine_manager(outcome);
+            return;
+        }
         let selected = self.selected_index_for_settings_section(section);
         let request_integrations = matches!(section, ClientSettingsSection::Integrations)
             && matches!(
@@ -100,6 +105,7 @@ impl ClientShellState {
                 ClientSettingsSection::Indicators | ClientSettingsSection::Sound => 2,
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::Integrations => settings.integrations.len(),
+                ClientSettingsSection::Machines => 1,
             },
             _ => 0,
         }
@@ -188,6 +194,7 @@ impl ClientShellState {
         let section = settings.section;
         let selected = settings.selected;
         match section {
+            ClientSettingsSection::Machines => self.open_machine_manager(outcome),
             ClientSettingsSection::Theme => {
                 let Some(name) = crate::config::THEME_NAMES.get(selected).copied() else {
                     return;

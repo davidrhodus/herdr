@@ -470,6 +470,7 @@ mod tests {
             seeds.sort();
             assert!(!seeds.is_empty());
             for seed in seeds {
+                eprintln!("replaying {name}: {}", seed.display());
                 let bytes = std::fs::read(&seed).expect("seed");
                 check(&bytes);
             }

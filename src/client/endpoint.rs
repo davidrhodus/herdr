@@ -5,6 +5,7 @@ use sha2::{Digest as _, Sha256};
 
 mod activation;
 mod catalog;
+pub(crate) mod catalog_sync;
 mod control;
 mod health;
 mod message_policy;

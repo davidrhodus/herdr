@@ -110,6 +110,7 @@ pub(super) fn render_collapsed(
             hits.machines.push(MachineHit {
                 rect,
                 status_badge,
+                import_sessions: Rect::default(),
                 collapse_toggle: Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1),
                 endpoint_id: endpoint.endpoint_id.clone(),
             });
@@ -408,7 +409,7 @@ pub(super) fn render_expanded(
                 let rect = Rect::new(body.x, y, content_width, 1);
                 let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
                 let marker = if collapsed { "▸" } else { "▾" };
-                let status_badge = render_endpoint_row(
+                let (status_badge, import_sessions) = render_endpoint_row(
                     buffer,
                     rect,
                     marker,
@@ -416,10 +417,12 @@ pub(super) fn render_expanded(
                     collapsed && &endpoint.endpoint_id == state.active_endpoint_id,
                     state.machine_diagnostics,
                     palette,
+                    config.mouse_capture,
                 );
                 hits.machines.push(MachineHit {
                     rect,
                     status_badge,
+                    import_sessions,
                     collapse_toggle: Rect::new(
                         rect.x.saturating_add(1),
                         rect.y,
@@ -595,7 +598,8 @@ fn render_endpoint_row(
     highlighted: bool,
     auth: &super::machine_diagnostics::MachineDiagnostics,
     palette: &Palette,
-) -> Rect {
+    mouse_capture: bool,
+) -> (Rect, Rect) {
     if highlighted {
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
     }
@@ -605,7 +609,7 @@ fn render_endpoint_row(
     } else {
         state
     };
-    let signal = if auth.required_for(endpoint) {
+    let mut signal = if auth.required_for(endpoint) {
         "! auth".to_owned()
     } else if endpoint.status == ClientEndpointStatus::Attention {
         "! error".to_owned()
@@ -616,12 +620,46 @@ fn render_endpoint_row(
     } else {
         format!("{glyph} {state}")
     };
+    let button = if endpoint.endpoint_id.is_local() || !mouse_capture {
+        ""
+    } else if rect.width >= 32 {
+        "[Import sessions]"
+    } else if rect.width >= 16 {
+        "[Import]"
+    } else {
+        ""
+    };
+    let button_width = display_width(button);
+    if button_width > 0 && display_width(&signal) > rect.width.saturating_sub(button_width + 10) {
+        signal = if auth.required_for(endpoint) {
+            "!"
+        } else {
+            glyph
+        }
+        .to_owned();
+    }
     let signal_width = display_width(&signal).min(rect.width);
+    let import_sessions = if button_width > 0 {
+        Rect::new(
+            rect.right().saturating_sub(signal_width + button_width + 1),
+            rect.y,
+            button_width,
+            1,
+        )
+    } else {
+        Rect::default()
+    };
     put_text(
         buffer,
         rect.x,
         rect.y,
-        rect.width.saturating_sub(signal_width.saturating_add(1)),
+        rect.width
+            .saturating_sub(signal_width.saturating_add(1))
+            .saturating_sub(if button_width > 0 {
+                button_width + 1
+            } else {
+                0
+            }),
         &format!(" {marker} {}", endpoint.label),
         Style::default()
             .fg(
@@ -633,6 +671,16 @@ fn render_endpoint_row(
             )
             .add_modifier(Modifier::BOLD),
     );
+    put_text(
+        buffer,
+        import_sessions.x,
+        import_sessions.y,
+        import_sessions.width,
+        button,
+        Style::default()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD),
+    );
     put_right_text(
         buffer,
         rect,
@@ -640,10 +688,13 @@ fn render_endpoint_row(
         &signal,
         auth.badge_style(endpoint, palette, Style::default().fg(color)),
     );
-    Rect::new(
-        rect.right().saturating_sub(signal_width),
-        rect.y,
-        signal_width,
-        1,
+    (
+        Rect::new(
+            rect.right().saturating_sub(signal_width),
+            rect.y,
+            signal_width,
+            1,
+        ),
+        import_sessions,
     )
 }

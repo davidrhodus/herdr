@@ -9,17 +9,260 @@ Each machine keeps its own Herdr server, sessions, and running processes. A lost
 
 Herdr requests SSH compression to reduce screen-update traffic on limited connections. This works with older compatible Herdr servers and does not change how typing or other input is delivered. Herdr's `-C` option overrides `Compression no` in your SSH config. If SSH reuses an existing connection through an external ControlMaster, that connection keeps its original compression setting.
 
+## Add and manage servers in the TUI
+
+Click **＋ server** at the bottom of the sidebar, or open **Servers** from the
+main menu or **Settings → Machines**. Enter a hostname, SSH config alias, LAN address, or Tailscale name in
+**Host / IP**, and your remote login in **Username**. Leave Username blank to
+use your SSH configuration or local username. Existing `you@hostname` addresses
+also work. Give it an optional display name and click
+**Connect**. Suggestions include literal SSH aliases and online Tailscale peers
+when the Tailscale CLI is available.
+
+Click **Browse Tailscale** beside Connect (or press Ctrl+T, the Control key on
+Mac) to open the device browser. No terminal keyboard settings need to change.
+It lists only devices that Tailscale reports as online, with their IPv4/IPv6
+addresses. Type a name, hostname, or IP address in Search to narrow the list;
+matching ignores letter case. Use Backspace to edit or Ctrl+U to clear the search.
+Click a device or select it with Up/Down and Enter to fill Host / IP;
+Herdr prefers its Tailscale DNS name and falls back to its IP address. The form
+keeps your username and other settings, and does not connect until you choose
+Connect. Escape or Back returns to the form.
+
+Use **Refresh** or press Ctrl+R to fetch current status without clearing your
+search. If Tailscale is missing,
+disconnected, or signed out, the browser explains how to retry; manual entry
+still works. Online status comes from Tailscale and does not verify SSH access.
+Herdr can use the CLI bundled in the macOS Tailscale app, even when `tailscale`
+is absent from PATH.
+
+Setup runs inside the dialog. OpenSSH asks for host-key approval, a key
+passphrase, password, or MFA response there. Herdr then checks the installation,
+lets you choose an existing remote session, or prepares a new one. If installing
+or replacing Herdr is necessary, a separate confirmation shows the source and
+destination. Replacing a running server asks explicitly before stopping its
+pane processes. You can cancel setup without leaving the TUI.
+
+Expand **Advanced** (or press Alt+A) for a custom SSH port, a key-file path on
+this computer, and an explicit remote session. Tab moves between fields; arrow
+keys and Enter choose suggestions. Key-file paths stay local and are never
+included in the shared server list. Each computer needs working SSH access.
+
+Right-click a saved server's sidebar header, or select it in **Servers**, to
+reconnect, update, rename, enable, disable, or remove it. Removing a profile leaves its
+remote sessions running. Failed setup retains the form so you can correct it
+and retry. Ctrl+G cancels an active setup; Escape closes a form.
+
 ### Recovering SSH authentication
 
-On Linux and macOS clients, when `remote.manage_ssh_config=true`, Herdr shares an approved OpenSSH connection across machine add, the sidebar, and saved-machine API commands. Run `herdr machine status [<label-or-id>] [--json]` for fresh, noninteractive checks. **Reachable** means the remote Herdr server is available now, not that every open TUI is connected. Run `herdr machine reconnect <label-or-id>` in a terminal to complete native SSH authentication and verify the saved machine. It does not install or update Herdr. Open clients recheck failed connections within 30 seconds; no restart is needed. Clicking **`! auth`**, **`! error`**, or a reconnecting status retries the connection; if it fails, a notice shows the latest error and relevant CLI command. It never opens a credential popup.
+Click a saved server's name or authentication-required badge to open SSH login
+and automatic key repair directly in the TUI. Background failures stay quiet;
+they never open a password prompt while you are working. Network failures retry
+normally, and host-key mismatches remain rejected.
 
-The shared connection uses `ControlPersist 600` (10 minutes of idle time); this is not MFA validity. Active connections can remain open, while corporate policy, the SSH server, or the network may end them sooner. Local Windows recovery is not supported yet. For unmanaged SSH connections, authentication remains your responsibility: running `ssh` by itself does not grant Herdr approval unless it uses the shared ControlPath. Host-key checking is unchanged; an unknown or changed host key remains **Attention**.
+**Automatic SSH key** is enabled by default in Add server for Linux/macOS hosts.
+Herdr enrolls and verifies the dedicated key before querying sessions or installing
+the remote build, so those steps reuse key authentication after one password entry.
+Click the checkbox or press Ctrl+K to disable enrollment for a server that requires
+another authentication method. The CLI opt-in is `herdr machine add <target> --setup-key`.
+
+For password-free reconnects, choose **Servers → your server → Set up SSH key
+(no more passwords)…**. Confirm, then enter the existing SSH password once in
+the embedded SSH prompt if requested. Herdr generates a dedicated Ed25519 key
+without a passphrase in private local storage, adds only its public key to that
+account's `~/.ssh/authorized_keys`, and verifies a fresh connection before saving
+the local identity setting. It then repairs the saved server connection and starts
+a stopped Herdr daemon. Existing keys and saved server profiles are preserved.
+Repeating setup reuses the same key and avoids duplicate authorized-key entries.
+No Rust installation, `ssh-copy-id`, or manual shell commands are needed.
+
+Private keys never sync to another manager: run this setup once on each computer.
+The server must allow public-key authentication without additional MFA for a
+fully unattended reconnect. The CLI equivalent is `herdr machine setup-key <label-or-id>`.
+
+Choose **Reconnect / authenticate** in the server's menu to complete native SSH
+authentication inside the TUI, prepare the matching Herdr executable, and start
+a stopped server. Keys stay with OpenSSH; password-only access can require a
+fresh password when its shared SSH connection expires. The CLI alternative is
+`herdr machine reconnect <label-or-id>`.
+
+For an existing Linux server, open **Servers → your server → Update Rust build…**.
+Enter the SSH password if requested, then approve installing the bundled build.
+Existing sessions use the normal restart approval flow; the saved profile is
+preserved. The CLI alternative is `herdr machine update <label-or-id>`.
+`herdr machine status [<label-or-id>] [--json]` performs fresh, noninteractive
+checks. **Reachable** means the remote server is available now; it does not
+mean every open TUI is connected.
+
+On Linux and macOS with `remote.manage_ssh_config=true`, Herdr shares an approved
+OpenSSH connection across setup, the sidebar, and saved-machine API commands.
+The connection uses `ControlPersist 600` (10 minutes of idle time); this is not
+MFA validity. Active connections can remain open, while corporate policy, the
+SSH server, or the network may end them sooner. Windows and unmanaged SSH do
+not share password-only or MFA approval with background connections; configure
+a key or SSH agent for unattended reconnects. First-contact trust is requested
+inside setup. Changed host keys remain rejected, and background connections
+never accept a new key automatically.
 
 Saved TUI connections check whether an existing shared SSH connection can open a new channel. CLI status and API commands check only after an initial read-only connection failure. If reuse fails while a fresh connection to the same host succeeds, Herdr retires the old connection from reuse and reconnects. Existing channels stay open. A fresh connection that needs authentication or rejects the host key does not trigger this recovery. API commands retry connection setup at most once and never repeat a request that may already have changed remote state.
 
+### Install a local Rust build on Linux hosts
+
+For a customized checkout, run `just build-linux-bundle`. This builds static
+Linux x86_64 and ARM64 executables from the same source, then embeds them in
+`target/release/herdr`. Install that manager executable on your computer.
+Adding a Linux server in the TUI installs the matching embedded executable over
+SSH, without fetching a published release or requiring Rust on the server.
+The setup approval identifies the bundled Rust build being installed.
+
+Local bundles have a source-specific version. Setup replaces a published or
+different local executable after approval, and reuses an already matching
+installation. Existing running sessions follow the normal server update and
+restart approval flow. Local builds never fall back to a published binary for
+a missing platform. `HERDR_REMOTE_BINARY` remains an explicit override.
+
+The build recipe installs the Rust musl targets and uses Rust's bundled linker;
+it needs no Docker or Zig. The resulting Linux payloads require no glibc and
+support both glibc and musl distributions. Rebuild the bundle after source changes.
+
+## Import a running terminal on a server
+
+Click **Import sessions** beside a saved server in the sidebar to open its
+terminal browser directly. Narrow sidebars use **Import**; expand the sidebar
+if it is collapsed. You can also choose
+**Servers → your server → Discover / import running terminals…**.
+Discovery lists this SSH account's external Linux terminals in the same process
+and mount namespace as Herdr, showing their TTY,
+foreground program, working directory, and process count. Herdr's own terminals,
+already-importing terminals, tmux/screen sessions, and other users' processes
+are excluded. Refresh queries the selected server without changing its sessions.
+
+If needed, choose **Enable import helper**. After approval, this installs the
+distribution's `reptyr` package and a protected, root-owned Herdr helper. SSH and
+administrator prompts stay in the TUI. Kernel tracing settings are not changed.
+
+Select a terminal, review the transfer, then choose **Open** for its new workspace.
+Administrator authorization may be requested there. The helper rechecks the
+account, host boot, PID, process start time, session ID, and TTY after authorization.
+It transfers the whole terminal using `reptyr -T`; the existing shell and programs
+keep running, while the old terminal window loses control.
+
+Closing the discovery dialog or disconnecting a manager does not cancel a started
+transfer. If permissions prevent import, the new workspace keeps the diagnostic
+and allows an explicit retry. Keep it open while a transfer is pending. Closing
+an imported workspace closes that terminal. Screen history and Herdr agent
+registration are not reconstructed, and the original processes do not receive
+new Herdr environment variables. A full server shutdown does not make an imported
+PID restartable; a later cold restore starts a normal shell instead of replaying
+a stale process ID. A live daemon handoff preserves the running import proxy.
+
+The browser works against every configured host and reports its capability.
+Live process transfer is currently Linux-only and still depends on the host's
+administrator/tracing policy. Other operating systems show an unsupported message.
+
+The neutral APIs are `terminal.sessions.list` and `terminal.sessions.import`;
+`herdr --machine <server> terminal-import list` exposes discovery from the CLI.
+
+## Pair managers directly over Tailscale
+
+Your desktop and laptop can share the server list directly, without choosing a
+shared host or enabling SSH between the managers. Both computers need this
+Herdr build, connected Tailscale, and an open Herdr UI.
+
+1. On either computer, open **Servers → Server-list sync → Pair another manager over Tailscale**.
+2. Choose **Find / refresh running managers**, select the other computer, and confirm the pairing request.
+3. On the other computer, open the same screen. Compare the full matching code shown on both computers and approve the request.
+4. Back on the first computer, confirm that the matching code agrees. The lists merge and automatic sync begins.
+
+Incoming requests show a notice and remain in the pairing screen; they do not
+interrupt terminal or SSH authentication input. Unfinished approvals expire
+after three minutes. Pairing is remembered across UI restarts. Multiple UI
+windows under the same OS user share one identity and the same pairings.
+
+Paired managers reconnect using stable Tailscale device identities, including
+after an IP or hostname changes. Additions, renames, enabled state, and removals
+sync every 15 seconds while the managers are running. Offline changes remain
+local until the other manager is available. **Sync paired managers now** forces
+a round. **Forget** revokes a pairing; **Stop direct manager sync** forgets all
+direct pairings on this computer. Neither action deletes your server list or
+stops remote sessions.
+
+Only server profiles sync. SSH keys, passwords, per-computer identity-file
+paths, UI layouts, and selections remain local. Approving direct sync switches
+that computer away from any previously configured shared-list host while
+retaining its existing list and merge history.
+
+Discovery checks for running Herdr managers on online Tailscale devices. If the
+other computer does not appear, check that both UIs are running this build.
+Restricted Tailscale policies must permit TCP port 45971 between the computers.
+Herdr listens only on its Tailscale addresses, authenticates paired exchanges,
+and opens no listener on LAN or public wildcard addresses. Changing this
+computer's Tailscale identity revokes its pairings; pair again on the new identity.
+
+## Sync the server list between computers
+
+For a shared host that can remain available while either manager UI is closed,
+open **Servers → Server-list sync**. Choose an existing saved server or
+enter another SSH address to use as the shared-list host. Herdr prepares that
+host through the same guided setup, merges its existing list, and starts
+sharing. Repeat this one-time choice on your other computer. If the list should
+live on the computer you are using, choose **Host on this computer** and enable
+SSH access through your operating system.
+
+The sharing screen shows the configured source, last successful sync, and any
+connection error. It also provides **Sync now** and **Leave shared list**.
+Leaving preserves your local list and running sessions.
+
+The CLI remains available. Choose one reachable computer or server to hold the
+shared list. On that computer, using the same OS user your clients will SSH into, run:
+
+```bash
+herdr sync host
+```
+
+On your other computers, join that host once:
+
+```bash
+herdr sync join you@desktop
+```
+
+Use an SSH config alias, LAN address, reachable WAN hostname, or Tailscale name.
+For example, `herdr sync join you@desktop.your-tailnet.ts.net`. All participants
+need a Herdr build with sync support and working SSH access. Sync uses SSH's
+existing authentication, host-key checks, and encryption; it requires no cloud
+account, web service, or additional listening port. The host's Herdr UI does not
+need to be open: an SSH command exchanges the list using its installed binary.
+
+The initial join merges both existing lists. Afterwards, adding, renaming,
+disabling, or removing a machine synchronizes automatically while a UI is open
+(every 15 seconds). Machine commands also attempt sync after saving. Run
+`herdr sync now` to force a round, and `herdr sync status` to see the configured
+host, last successful exchange, and any connection error. A failed initial join
+keeps the selected source configured so a later round can retry.
+
+The shared list includes machine IDs, labels, SSH targets, sessions, and enabled
+state. SSH credentials and configuration, UI selection, and local terminal
+state stay on each computer. SSH aliases must resolve and authenticate on each
+computer; portable hostnames such as Tailscale names make this easier. Separately
+created profiles retain their own IDs, including duplicate destinations.
+
+Use an always-on host if both desktop and laptop should sync while the other
+is asleep. When the host is unreachable, changes stay local and are uploaded
+when a UI or sync command can reach it again. Edits to different machines merge;
+concurrent edits to the same machine resolve by logical counter, then device
+ID. Deletions win over stale edits, so an offline computer cannot resurrect a
+removed machine. Adding the machine again creates a fresh ID.
+
+`herdr sync leave` stops syncing and keeps the local machine list and all remote
+sessions. Run it before choosing a different shared-list host. The shared list
+is per SSH user, not per Herdr runtime session. Historical deletions are retained
+up to 1,024 total records (including at most 64 live machines).
+
+
 ## Before you connect
 
-You need normal SSH access to the remote machine. Verify it first:
+You need normal SSH access to the remote machine. Guided setup checks this in
+the TUI; you can also check it from a terminal:
 
 ```bash
 ssh workbox
@@ -29,9 +272,9 @@ ssh workbox
 
 Multi-machine connections support Linux, macOS, and Windows clients connecting to Linux or macOS servers on x86_64 or aarch64, or Windows servers on x86_64. Interactive setup can install or update the complete remote package after confirmation; background reconnects only discover installed packages. See [Remote attach over SSH](/docs/persistence-remote/#remote-attach-over-ssh) for SSH configuration, authentication, and custom binaries.
 
-## Add a machine
+## Add a machine from the CLI
 
-Run setup in an interactive terminal so Herdr can ask before installing or replacing anything:
+Alternatively, run setup in an interactive terminal so Herdr can ask before installing or replacing anything:
 
 ```bash
 herdr machine add workbox

@@ -138,6 +138,7 @@ fn workspace_navigation_waits_for_the_target_presentation_fence() {
             Some(&mut state),
             &mut Vec::new(),
             &mut scheduled,
+            None,
         )
         .unwrap();
         if !surface_active {
@@ -353,6 +354,71 @@ fn machine_badge_retries_and_reports_the_fresh_diagnostic() {
     ));
     click_machine(&mut state, &id, true);
     assert!(state.take_machine_retries().is_empty());
+}
+
+#[test]
+fn explicit_auth_failed_machine_selection_opens_native_repair_instead_of_batch_retry() {
+    use crate::client::machine_setup::{Command, Operation};
+    for badge in [true, false] {
+        for (error, authenticate) in [
+            ("Permission denied (publickey,password).", true),
+            (
+                "Host key verification failed. Permission denied (publickey).",
+                false,
+            ),
+            ("Connection timed out", false),
+        ] {
+            let (mut state, id) = state_with_remote();
+            state.set_endpoint_status(&id, ClientEndpointStatus::Attention);
+            state.set_machine_diagnostic(&id, error.into());
+            state.compose(120, 40).unwrap();
+            assert!(
+                state.overlay.is_none(),
+                "background failure opened authentication"
+            );
+            let hit = state
+                .hits
+                .machines
+                .iter()
+                .find(|hit| hit.endpoint_id == id)
+                .unwrap();
+            let (column, row) = if badge {
+                (hit.status_badge.x, hit.status_badge.y)
+            } else {
+                (hit.rect.x + 3, hit.rect.y)
+            };
+            let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })]);
+            let enrolled = outcome.actions.iter().any(|action| {
+                matches!(
+                    action,
+                    ClientShellAction::MachineManager(Command::Run {
+                        operation: Operation::SetupKey(_),
+                        ..
+                    })
+                )
+            });
+            assert_eq!(enrolled, authenticate, "badge={badge}: {error}");
+            assert!(
+                outcome.requests.is_empty(),
+                "authentication reached the terminal pane"
+            );
+            if authenticate {
+                assert!(state.take_machine_retries().is_empty());
+                assert!(matches!(
+                    state.overlay,
+                    Some(ClientShellOverlay::Machines(_))
+                ));
+            } else {
+                assert_eq!(state.take_machine_retries(), vec![id]);
+                assert!(state.overlay.is_none());
+            }
+        }
+    }
 }
 
 #[test]
@@ -2419,7 +2485,9 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         state.endpoint_status(&endpoint_id),
         Some(ClientEndpointStatus::Reconnecting)
     );
-    assert!(text.contains("◐ reconnecting"), "frame: {text}");
+    // Narrow sidebar headers retain the compact status badge beside Import;
+    // the active endpoint's title still spells out its connection state.
+    assert!(text.contains("Build · reconnecting"), "frame: {text}");
     assert!(text.contains("Build · remote agent"), "frame: {text}");
     assert!(
         text.contains("LIVE"),

@@ -19,6 +19,7 @@ mod clipboard_images;
 mod config_reload;
 #[cfg(unix)]
 mod direct_graphics;
+pub(crate) mod direct_sync;
 pub(crate) mod endpoint;
 mod endpoint_commands;
 mod errors;
@@ -30,6 +31,7 @@ mod handshake;
 mod image_files;
 mod input;
 mod loop_config;
+mod machine_setup;
 mod notifications;
 mod shell;
 mod shell_runtime;
@@ -454,6 +456,7 @@ async fn run_client_loop(
     let local_unavailable = initial.is_none();
 
     let mut state = ClientState {
+        machine_setup: Default::default(),
         blit_encoder: render_ansi::BlitEncoder::new(),
         image_files: image_files::FileTransport::from_environment(),
         mouse_capture_active: config.mouse_capture_active,
@@ -770,6 +773,24 @@ async fn run_client_loop(
                 }
             }
         }
+        let mut machine_repaint = false;
+        for _ in 0..8 {
+            let Some(event) = state.machine_setup.poll() else {
+                break;
+            };
+            if let Some(shell) = state.shell.as_mut() {
+                machine_repaint |= shell.receive_machine_event(event);
+            }
+        }
+        if machine_repaint {
+            if let Some(frame) = state
+                .shell
+                .as_mut()
+                .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
+            {
+                state.present_frame(frame);
+            }
+        }
         let now = std::time::Instant::now();
         while let Some(event) = power_monitor.try_recv() {
             if supervisors.host_power_event(event, now) {
@@ -848,6 +869,19 @@ async fn run_client_loop(
                 }
             }
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
+            ClientLoopEvent::DirectSync(view) => {
+                let repaint = state
+                    .shell
+                    .as_mut()
+                    .is_some_and(|shell| shell.receive_direct_sync(view));
+                if repaint {
+                    if let Some(frame) = state.shell.as_mut().and_then(|shell| {
+                        shell.compose(state.reported_size.0, state.reported_size.1)
+                    }) {
+                        state.present_frame(frame);
+                    }
+                }
+            }
             #[cfg(unix)]
             ClientLoopEvent::StdinInput(data) => {
                 let image_bridge_active = endpoint_accepts_local_images(
@@ -1285,6 +1319,11 @@ async fn run_client_loop(
                 cell_height_px,
                 pixel_geometry_exact,
             ) => {
+                if let Some(shell) = state.shell.as_ref() {
+                    if let Some(command) = shell.machine_resize(new_cols, new_rows) {
+                        state.machine_setup.send(command);
+                    }
+                }
                 // On Unix, palette changes may lack a color-scheme notification.
                 // Re-query on redraw, including SIGWINCH without a resize.
                 #[cfg(unix)]
@@ -1969,6 +2008,7 @@ async fn run_client_loop(
                             state.shell.as_mut(),
                             &mut state.detached_process_children,
                             &mut scheduled_activation,
+                            Some(&mut state.machine_setup),
                         )?;
                         let repaint = repaint || dispatch_repaint;
                         if replay_mouse.is_empty() {

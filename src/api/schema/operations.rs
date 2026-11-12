@@ -156,6 +156,7 @@ mod tests {
             "product_announcement.dismiss",
             "release_notes.dismiss",
             "command.invoke",
+            "terminal.sessions.import",
             "workspace.create",
             "workspace.focus",
             "workspace.rename",

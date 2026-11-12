@@ -567,6 +567,13 @@ impl ClientShellState {
             }
         }
         match pending.kind {
+            PendingEndpointKind::Tasks {
+                endpoint_id,
+                overlay_id,
+                request,
+            } => {
+                return self.complete_task_request(endpoint_id, overlay_id, request, result);
+            }
             PendingEndpointKind::Generic => {}
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {

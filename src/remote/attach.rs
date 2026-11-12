@@ -145,6 +145,19 @@ pub(crate) fn check_saved_ssh(target: &str, session: &str) -> io::Result<()> {
     }
 }
 
+pub(crate) fn enable_terminal_imports(target: &str) -> io::Result<()> {
+    let ssh = RemoteSsh::new_noninteractive(target.into());
+    let remote = find_installed_remote_herdr(&ssh)?;
+    let command = remote
+        .executable
+        .command(&["terminal-import", "install-helper"]);
+    let mut install = ssh_interactive_command(target, &command)?;
+    if !install.command.status()?.success() {
+        return Err(io::Error::other("Import helper setup did not finish"));
+    }
+    Ok(())
+}
+
 pub(crate) struct SavedSshSetup {
     ssh: RemoteSsh,
     remote_herdr: RemoteHerdr,
@@ -153,19 +166,28 @@ pub(crate) struct SavedSshSetup {
 
 impl SavedSshSetup {
     pub(crate) fn connect(target: &str) -> io::Result<Self> {
+        Self::connect_with_identity(target, None)
+    }
+
+    pub(crate) fn connect_with_identity(target: &str, identity: Option<&Path>) -> io::Result<Self> {
+        super::setup_progress::emit(super::setup_progress::Phase::Connecting);
         super::validate_remote_target(target)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let manage = crate::config::Config::load()
             .config
             .remote
             .manage_ssh_config;
-        let ssh = RemoteSsh::new(
+        let mut ssh = RemoteSsh::new(
             target.to_owned(),
             manage,
             crate::session::DEFAULT_SESSION_NAME.to_owned(),
         );
+        if let Some(identity) = identity {
+            ssh.identity_file = Some(identity.to_owned());
+        }
         let remote_herdr =
             RemoteHerdr::for_platform(detect_remote_platform(&ssh)?.into_setup_platform());
+        super::setup_progress::emit(super::setup_progress::Phase::Checking);
         let candidates = remote_binary_candidates(&ssh, &remote_herdr)?;
         Ok(Self {
             ssh,
@@ -175,6 +197,7 @@ impl SavedSshSetup {
     }
 
     pub(crate) fn running_sessions(&self) -> io::Result<Vec<String>> {
+        super::setup_progress::emit(super::setup_progress::Phase::Sessions);
         // A fresh host must still reach the normal installation approval.
         if self.candidates.is_empty() {
             return Ok(Vec::new());
@@ -212,8 +235,23 @@ impl SavedSshSetup {
     }
 
     pub(crate) fn prepare(
+        self,
+        session_name: &str,
+    ) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
+        self.prepare_with_update(session_name, false)
+    }
+
+    pub(crate) fn prepare_update(
+        self,
+        session_name: &str,
+    ) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
+        self.prepare_with_update(session_name, true)
+    }
+
+    fn prepare_with_update(
         mut self,
         session_name: &str,
+        update_running: bool,
     ) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
         crate::session::validate_name(session_name)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -225,6 +263,7 @@ impl SavedSshSetup {
         } = self;
         let prepared =
             prepare_discovered_remote_herdr(&ssh, remote_herdr, &candidates, false, true)?;
+        super::setup_progress::emit(super::setup_progress::Phase::Starting);
         ensure_remote_server_ready(
             &ssh,
             &prepared.remote_herdr,
@@ -232,6 +271,27 @@ impl SavedSshSetup {
             false,
             true,
         )?;
+
+        if update_running {
+            let installed = remote_client_status(&ssh, &prepared.remote_herdr)?
+                .and_then(|status| status.version)
+                .ok_or_else(|| io::Error::other("updated binary did not report its version"))?;
+            if let RemoteServerStatus::Running { version, .. } =
+                remote_server_status(&ssh, &prepared.remote_herdr, false)?
+            {
+                if version.as_deref() != Some(installed.as_str()) {
+                    if !confirm_remote_server_stop(
+                        &ssh.destination(),
+                        version.as_deref(),
+                        RemoteServerRestartReason::Version,
+                    )? {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted,
+                            "Rust build installed; running server update cancelled, existing sessions remain running"));
+                    }
+                    stop_remote_server(&ssh, &prepared.remote_herdr)?;
+                }
+            }
+        }
 
         // The bridge already owns daemon startup. EOF closes only this temporary attachment,
         // leaving the named server running even when no local TUI is open yet.
@@ -763,54 +823,93 @@ pub(crate) fn ssh_error_requires_authentication(message: &str) -> bool {
 /// config after spawn. Dropping it never stops the shared authenticated master.
 pub(crate) struct SshAuthenticationCommand {
     pub(crate) command: Command,
-    _config: ManagedSshConfig,
+    _config: Option<ManagedSshConfig>,
 }
 
 pub(crate) fn ssh_authentication_command(target: &str) -> io::Result<SshAuthenticationCommand> {
+    ssh_interactive_command(target, "exit")
+}
+
+pub(super) fn ssh_interactive_command(
+    target: &str,
+    remote_command: &str,
+) -> io::Result<SshAuthenticationCommand> {
     if target.is_empty() || target.starts_with('-') || target.chars().any(char::is_control) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid SSH target",
         ));
     }
-    if !crate::platform::remote_ssh_config_paths().multiplexing {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, "interactive SSH recovery requires Unix OpenSSH multiplexing; authenticate outside Herdr on this platform"));
-    }
-    if !crate::config::Config::load()
-        .config
-        .remote
-        .manage_ssh_config
+    if !crate::platform::remote_ssh_config_paths().multiplexing
+        || !crate::config::Config::load()
+            .config
+            .remote
+            .manage_ssh_config
     {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "interactive SSH recovery requires remote.manage_ssh_config=true",
-        ));
+        let mut command = Command::new("ssh");
+        if let Some(path) = super::device_identity::get(target) {
+            command.arg("-i").arg(path);
+        }
+        command
+            .env("SSH_ASKPASS_REQUIRE", "never")
+            .env_remove("SSH_ASKPASS")
+            .args([
+                "-o",
+                "BatchMode=no",
+                "-o",
+                "AddKeysToAgent=yes",
+                "-o",
+                native_auth_host_key_option(),
+                "-T",
+                target,
+                remote_command,
+            ]);
+        return Ok(SshAuthenticationCommand {
+            command,
+            _config: None,
+        });
     }
     let config = write_managed_ssh_config(target)?;
-    Ok(authentication_command_with_config(target, config))
+    Ok(authentication_command_with_config(
+        target,
+        config,
+        remote_command,
+    ))
+}
+
+fn native_auth_host_key_option() -> &'static str {
+    if std::env::var_os(super::setup_progress::ENV).is_some() {
+        "StrictHostKeyChecking=ask"
+    } else {
+        "StrictHostKeyChecking=yes"
+    }
 }
 
 fn authentication_command_with_config(
     target: &str,
     config: ManagedSshConfig,
+    remote_command: &str,
 ) -> SshAuthenticationCommand {
     let mut command = Command::new("ssh");
     apply_managed_ssh_options(&mut command, Some(&config.options));
+    if let Some(path) = super::device_identity::get(target) {
+        command.arg("-i").arg(path);
+    }
     command
         .env("SSH_ASKPASS_REQUIRE", "never")
         .env_remove("SSH_ASKPASS")
         .arg("-o")
         .arg("BatchMode=no")
         .arg("-o")
-        .arg("StrictHostKeyChecking=yes")
+        .arg(native_auth_host_key_option())
         .arg("-o")
         .arg("NumberOfPasswordPrompts=3")
         .arg("-T")
         .arg(target)
-        .arg("exit");
+        .arg(remote_command);
     SshAuthenticationCommand {
         command,
-        _config: config,
+        _config: Some(config),
     }
 }
 
@@ -818,6 +917,8 @@ pub(super) struct RemoteSsh {
     target: String,
     session_name: String,
     managed_config: Option<ManagedSshConfig>,
+    identity_file: Option<PathBuf>,
+    require_catalog_sync: bool,
     noninteractive: bool,
     pub(super) cancelled: Arc<AtomicBool>,
 }
@@ -835,6 +936,8 @@ impl RemoteSsh {
         };
 
         Self {
+            identity_file: super::device_identity::get(&target),
+            require_catalog_sync: false,
             target,
             session_name,
             managed_config,
@@ -1020,12 +1123,18 @@ impl RemoteSsh {
     fn base_command(&self) -> Command {
         let mut command = Command::new("ssh");
         apply_managed_ssh_options(&mut command, self.options());
+        if let Some(path) = &self.identity_file {
+            command.arg("-i").arg(path);
+        }
         command
     }
 
     fn scp_command(&self) -> Command {
         let mut command = Command::new("scp");
         apply_managed_scp_options(&mut command, self.options());
+        if let Some(path) = &self.identity_file {
+            command.arg("-i").arg(path);
+        }
         command
     }
 
@@ -1096,6 +1205,7 @@ impl RemoteSsh {
     }
 
     fn install_herdr(&self, remote_herdr: &RemoteHerdr, source_path: &Path) -> io::Result<()> {
+        super::setup_progress::emit(super::setup_progress::Phase::Installing);
         let output = self.sh_output(&remote_install_prepare_script(remote_herdr))?;
         if !output.status.success() {
             return Err(command_failed("remote install preparation failed", &output));
@@ -1160,6 +1270,7 @@ impl RemoteSsh {
         identity: &str,
         sha256: &str,
     ) -> io::Result<RemoteHerdr> {
+        super::setup_progress::emit(super::setup_progress::Phase::Installing);
         let installer_dir = private_download_dir("windows-installer")?;
         let local_installer_path = installer_dir.join("install.ps1");
         if let Err(err) = fs::write(&local_installer_path, crate::update::WINDOWS_INSTALLER) {
@@ -1517,11 +1628,19 @@ fn prepare_discovered_remote_herdr(
         );
     }
     let override_binary = remote_binary_override_path()?;
+    let required_version = (override_binary.is_none()
+        && super::bundle::requires_matching_version(remote_herdr.platform.os))
+    .then(current_version);
 
     if override_binary.is_none() {
         for candidate in candidates {
-            if remote_binary_supports_endpoint_requirement(ssh, candidate, require_surface_interest)
-                .unwrap_or(false)
+            if remote_binary_matches_install_requirement(
+                ssh,
+                candidate,
+                require_surface_interest,
+                required_version.as_deref(),
+            )
+            .unwrap_or(false)
             {
                 return Ok(PreparedRemoteHerdr {
                     remote_herdr: candidate.clone(),
@@ -1529,10 +1648,11 @@ fn prepare_discovered_remote_herdr(
                 });
             }
         }
-        if remote_binary_supports_endpoint_requirement(
+        if remote_binary_matches_install_requirement(
             ssh,
             &remote_herdr,
             require_surface_interest,
+            required_version.as_deref(),
         )? {
             return Ok(PreparedRemoteHerdr {
                 remote_herdr,
@@ -1550,6 +1670,8 @@ fn prepare_discovered_remote_herdr(
         stop_after_install_approved = confirm_remote_install_with_running_server(
             ssh,
             status_probe_herdr,
+            &remote_herdr,
+            &install_source_description(&remote_herdr.platform, override_binary.as_deref()),
             live_handoff_enabled,
             require_surface_interest,
         )?;
@@ -1566,7 +1688,12 @@ fn prepare_discovered_remote_herdr(
     source.cleanup();
     install_result?;
 
-    if !remote_binary_supports_endpoint_requirement(ssh, &remote_herdr, require_surface_interest)? {
+    if !remote_binary_matches_install_requirement(
+        ssh,
+        &remote_herdr,
+        require_surface_interest,
+        required_version.as_deref(),
+    )? {
         return Err(io::Error::other(format!(
             "installed remote herdr at {}, but it does not support saved SSH endpoint federation",
             remote_herdr.executable.display()
@@ -1630,6 +1757,8 @@ fn prepare_windows_remote_herdr(
         confirm_remote_install_with_running_server(
             ssh,
             candidate,
+            &remote_herdr,
+            &install_source_description(&remote_herdr.platform, override_package.as_deref()),
             live_handoff_enabled,
             require_surface_interest,
         )?
@@ -2028,6 +2157,15 @@ fn remote_client_status(
         }
         return Ok(None);
     }
+    if ssh.require_catalog_sync {
+        let probe = remote_herdr.executable.command(&["sync", "check-v1"]);
+        let result = ssh.shell_output(&remote_herdr.platform, &probe)?;
+        if !result.status.success()
+            || String::from_utf8_lossy(&result.stdout).trim() != "herdr-catalog-sync-v1"
+        {
+            return Ok(None);
+        }
+    }
     Ok(parse_client_status_json(&String::from_utf8_lossy(
         &output.stdout,
     )))
@@ -2038,9 +2176,22 @@ fn remote_binary_supports_endpoint_requirement(
     remote_herdr: &RemoteHerdr,
     require_surface_interest: bool,
 ) -> io::Result<bool> {
+    remote_binary_matches_install_requirement(ssh, remote_herdr, require_surface_interest, None)
+}
+
+fn remote_binary_matches_install_requirement(
+    ssh: &RemoteSsh,
+    remote_herdr: &RemoteHerdr,
+    require_surface_interest: bool,
+    required_version: Option<&str>,
+) -> io::Result<bool> {
     Ok(
         remote_client_status(ssh, remote_herdr)?.is_some_and(|status| {
-            status.supports_endpoint_requirement(&remote_herdr.platform, require_surface_interest)
+            status.supports_install_requirement(
+                &remote_herdr.platform,
+                require_surface_interest,
+                required_version,
+            )
         }),
     )
 }
@@ -2104,6 +2255,14 @@ fn install_source_description_for(
         return format!("{REMOTE_BINARY_ENV_VAR} ({})", path.display());
     }
 
+    if super::bundle::asset(platform.os, platform.arch).is_some() {
+        return format!(
+            "the bundled Rust build {} for {}",
+            current_version(),
+            platform.asset_key()
+        );
+    }
+
     if local_binary_can_seed_remote {
         "the current local herdr binary".to_string()
     } else {
@@ -2120,8 +2279,13 @@ fn resolve_install_source(
     platform: &RemotePlatform,
     override_binary: Option<PathBuf>,
 ) -> io::Result<InstallSource> {
+    super::setup_progress::emit(super::setup_progress::Phase::Downloading);
     if let Some(path) = override_binary {
         return Ok(InstallSource::persistent(path));
+    }
+
+    if let Some(bytes) = super::bundle::asset(platform.os, platform.arch) {
+        return extract_bundled_install_source(&platform.asset_key(), bytes);
     }
 
     if *platform == RemotePlatform::local() {
@@ -2131,7 +2295,23 @@ fn resolve_install_source(
         }
     }
 
+    if crate::build_info::channel() == "local" {
+        return Err(io::Error::other(format!(
+            "this local Rust build has no bundled {} binary; rebuild with `just build-linux-bundle` or set {REMOTE_BINARY_ENV_VAR} to a matching binary",
+            platform.asset_key()
+        )));
+    }
     download_release_asset(platform)
+}
+
+fn extract_bundled_install_source(asset_key: &str, bytes: &[u8]) -> io::Result<InstallSource> {
+    let dir = private_download_dir(asset_key)?;
+    let path = dir.join("herdr.tmp");
+    if let Err(error) = fs::write(&path, bytes) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(error);
+    }
+    Ok(InstallSource::temporary(path, dir))
 }
 
 fn local_binary_can_seed_remote(platform: &RemotePlatform) -> bool {
@@ -2237,6 +2417,8 @@ fn ensure_remote_server_ready(
 fn confirm_remote_install_with_running_server(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
+    installation: &RemoteHerdr,
+    source_description: &str,
     live_handoff_enabled: bool,
     require_surface_interest: bool,
 ) -> io::Result<bool> {
@@ -2255,10 +2437,21 @@ fn confirm_remote_install_with_running_server(
             eprint!("continue installing the remote herdr binary? [y/N] ");
             io::stderr().flush()?;
 
-            let mut answer = String::new();
-            io::stdin().read_line(&mut answer)?;
-            let answer = answer.trim().to_ascii_lowercase();
-            if answer != "y" && answer != "yes" {
+            let approved = if let Some(answer) = super::setup_progress::confirm(
+                "Install Herdr",
+                format!(
+                    "Install {source_description} on {target} at {}? The running server could not be inspected.",
+                    installation.executable.display()
+                ),
+                false,
+            )? {
+                answer
+            } else {
+                let mut answer = String::new();
+                io::stdin().read_line(&mut answer)?;
+                matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+            };
+            if !approved {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "remote herdr install cancelled",
@@ -2336,10 +2529,21 @@ fn confirm_remote_install_with_running_server(
     );
     io::stderr().flush()?;
 
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    let answer = answer.trim().to_ascii_lowercase();
-    if answer != "y" && answer != "yes" {
+    let approved = if let Some(answer) = super::setup_progress::confirm(
+        "Install and restart Herdr",
+        format!(
+            "Install {source_description} on {target} at {} and stop its running server? This stops active remote pane processes, including shells, agents, dev servers and tests.",
+            installation.executable.display()
+        ),
+        true,
+    )? {
+        answer
+    } else {
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    };
+    if !approved {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "remote herdr install cancelled",
@@ -2390,14 +2594,14 @@ fn probe_remote_endpoint(
     remote_herdr: &RemoteHerdr,
 ) -> io::Result<crate::client::endpoint::EndpointNegotiation> {
     let path = local_forward_socket_path(ssh.target(), &ssh.session_name);
-    let bridge = SshStdioBridge::start(
+    let bridge = SshStdioBridge::start_command_using_identity(
         ssh.target.clone(),
-        remote_herdr.clone(),
+        remote_herdr.executable.bridge_command(&ssh.session_name),
         path.clone(),
-        ssh.session_name.clone(),
         ssh.options(),
         true,
         Arc::new(AtomicBool::new(false)),
+        ssh.identity_file.clone(),
     )?;
     let mut stream = crate::ipc::connect_local_stream(&path)?;
     // Use the saved client's noninteractive path. This metadata-only attachment never
@@ -2425,6 +2629,16 @@ struct RemoteClientStatusJson {
 }
 
 impl RemoteClientStatusJson {
+    fn supports_install_requirement(
+        &self,
+        platform: &RemotePlatform,
+        require_surface_interest: bool,
+        required_version: Option<&str>,
+    ) -> bool {
+        self.supports_endpoint_requirement(platform, require_surface_interest)
+            && required_version.is_none_or(|required| self.version.as_deref() == Some(required))
+    }
+
     fn supports_endpoint_requirement(
         &self,
         platform: &RemotePlatform,
@@ -2564,6 +2778,9 @@ fn confirm_remote_server_stop(
                 "the remote server was started by a herdr build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
             );
         }
+        RemoteServerRestartReason::Version => {
+            eprintln!("restart the remote server to run the newly installed Rust build.");
+        }
     }
 
     eprintln!("This stops active remote pane processes, including shells, agents, dev servers, and tests.");
@@ -2575,7 +2792,11 @@ fn confirm_remote_server_stop(
     eprint!("{prompt}");
     io::stderr().flush()?;
 
-    if read_remote_confirmation(&mut io::stdin().lock(), false)? {
+    let approved = match super::setup_progress::confirm("Restart remote server",format!("{prompt} This stops active remote pane processes, including shells, agents, dev servers and tests."),true)? {
+        Some(answer) => answer,
+        None => read_remote_confirmation(&mut io::stdin().lock(), false)?,
+    };
+    if approved {
         return Ok(true);
     }
     if required_upgrade {
@@ -2872,7 +3093,18 @@ fn confirm_remote_install(
     );
     io::stderr().flush()?;
 
-    if !read_remote_confirmation(&mut io::stdin().lock(), true)? {
+    let approved = match super::setup_progress::confirm(
+        "Install Herdr",
+        format!(
+            "Install {source_description} on {target} at {}?",
+            remote_herdr.executable.display()
+        ),
+        false,
+    )? {
+        Some(answer) => answer,
+        None => read_remote_confirmation(&mut io::stdin().lock(), true)?,
+    };
+    if !approved {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "remote herdr installation cancelled",
@@ -3035,6 +3267,27 @@ impl SshStdioBridge {
         noninteractive: bool,
         should_stop: Arc<AtomicBool>,
     ) -> io::Result<Self> {
+        let identity = super::device_identity::get(&target);
+        Self::start_command_using_identity(
+            target,
+            remote_command,
+            local_socket,
+            ssh_options,
+            noninteractive,
+            should_stop,
+            identity,
+        )
+    }
+
+    fn start_command_using_identity(
+        target: String,
+        remote_command: String,
+        local_socket: PathBuf,
+        ssh_options: Option<&ManagedSshOptions>,
+        noninteractive: bool,
+        should_stop: Arc<AtomicBool>,
+        identity: Option<PathBuf>,
+    ) -> io::Result<Self> {
         crate::ipc::prepare_socket_path(&local_socket, |path| {
             format!("remote bridge is already listening at {}", path.display())
         })?;
@@ -3065,6 +3318,7 @@ impl SshStdioBridge {
                             thread_ssh_options.as_ref(),
                             noninteractive,
                             &thread_stop,
+                            identity.as_deref(),
                         ) {
                             let _ =
                                 failure_tx.try_send(io::Error::new(err.kind(), err.to_string()));
@@ -3263,9 +3517,13 @@ fn bridge_connection(
     ssh_options: Option<&ManagedSshOptions>,
     noninteractive: bool,
     bridge_stop: &Arc<AtomicBool>,
+    identity: Option<&Path>,
 ) -> io::Result<()> {
     let mut command = Command::new("ssh");
     apply_managed_ssh_options(&mut command, ssh_options);
+    if let Some(identity) = identity {
+        command.arg("-i").arg(identity);
+    }
     if noninteractive {
         apply_noninteractive_ssh_options(&mut command);
     }
@@ -3673,9 +3931,172 @@ fn sanitize_path_component(input: &str) -> String {
     sanitized.trim_matches('-').chars().take(32).collect()
 }
 
+/// A separate JSON protocol keeps catalog sync independent of frozen terminal
+/// codecs. SSH authenticates the user's peer and encrypts every exchange.
+pub(crate) fn exchange_catalog(
+    target: &str,
+    document: &herdr_sync::Document,
+) -> io::Result<herdr_sync::Document> {
+    super::validate_remote_target(target).map_err(io::Error::other)?;
+    if target.len() > 1024 || target.chars().any(char::is_control) {
+        return Err(io::Error::other("invalid sync SSH target"));
+    }
+    document.validate().map_err(io::Error::other)?;
+    let ssh = RemoteSsh::new_noninteractive(target.to_owned());
+    // Discovery is read-only. The subsequent exchange is never blindly retried.
+    let remote = match find_installed_remote_herdr(&ssh) {
+        Err(_) if ssh.prepare_shared_transport().unwrap_or(false) => {
+            find_installed_remote_herdr(&ssh)?
+        }
+        result => result?,
+    };
+    let command = catalog_sync_command(&remote.executable);
+    let input = serde_json::to_vec(document).map_err(io::Error::other)?;
+    let child = ssh
+        .command()
+        .arg(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let output = super::process::wait_with_input_output_limit(
+        child,
+        input,
+        Duration::from_secs(20),
+        Arc::clone(&ssh.cancelled),
+        herdr_sync::MAX_BODY + 64 * 1024,
+    )?;
+    if !output.status.success() {
+        return Err(command_failed("peer catalog sync failed (ensure this build is installed and `herdr sync host` is enabled on the peer)", &output));
+    }
+    let output = normalize_remote_output(output)?;
+    if output.stdout.len() > herdr_sync::MAX_BODY {
+        return Err(io::Error::other("peer sync response exceeds size limit"));
+    }
+    let document: herdr_sync::Document = serde_json::from_slice(&output.stdout)
+        .map_err(|_| io::Error::other("invalid peer catalog sync response"))?;
+    document.validate().map_err(io::Error::other)?;
+    Ok(document)
+}
+
+pub(crate) fn prepare_catalog_host(target: &str) -> io::Result<()> {
+    crate::client::endpoint::SavedSshEndpoint::new("Shared list", target, "default")
+        .map_err(io::Error::other)?;
+    let manage = crate::config::Config::load()
+        .config
+        .remote
+        .manage_ssh_config;
+    let mut ssh = RemoteSsh::new(
+        target.into(),
+        manage,
+        crate::session::DEFAULT_SESSION_NAME.into(),
+    );
+    ssh.require_catalog_sync = true;
+    // Reuse the interactive installer and approvals, without starting an extra
+    // runtime session just to host the shared catalog.
+    let prepared = prepare_remote_herdr(&ssh, false, true)?;
+    if prepared.stop_after_install_approved {
+        ensure_remote_server_ready(&ssh, &prepared.remote_herdr, true, false, true)?;
+    }
+    let remote = prepared.remote_herdr;
+    let command = match &remote.executable {
+        RemoteExecutable::PosixShellPath(_) => posix_base64_command(&posix_remote_output_command(
+            &format!("exec {} <&3", remote.executable.command(&["sync", "host"])),
+        )),
+        RemoteExecutable::WindowsPath(path) => {
+            windows_powershell_streaming_application_command(path, &["sync", "host"])
+        }
+    };
+    let child = ssh
+        .command()
+        .arg(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let output = output_with_forwarded_stderr(child, Some(&[]))?;
+    if !output.status.success() {
+        return Err(command_failed(
+            "Could not enable sharing on the selected server",
+            &output,
+        ));
+    }
+    Ok(())
+}
+
+fn catalog_sync_command(executable: &RemoteExecutable) -> String {
+    let args = ["sync", "exchange-v1"];
+    match executable {
+        RemoteExecutable::PosixShellPath(_) => posix_base64_command(&posix_remote_output_command(
+            &format!("exec {} <&3", executable.command(&args)),
+        )),
+        RemoteExecutable::WindowsPath(path) => {
+            windows_powershell_streaming_application_command(path, &args)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_sync_uses_framed_streaming_commands_on_both_host_platforms() {
+        let posix = catalog_sync_command(&RemoteExecutable::PosixShellPath(
+            "'/opt/herdr bin/herdr'".into(),
+        ));
+        assert!(posix.starts_with("/bin/sh -c 'exec 3<&0; echo "));
+        assert!(!posix.contains("/opt/herdr bin"));
+        let windows = catalog_sync_command(&RemoteExecutable::WindowsPath(
+            r"C:\Herdr Folder\herdr.exe".into(),
+        ));
+        let decoded = decode_windows_command(&windows);
+        assert!(decoded.contains("herdr-remote-output-ready:1"));
+        assert!(decoded.contains("sync exchange-v1"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_sync_preserves_binary_stdin_and_literal_executable_metacharacters() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "herdr-sync-shell-{}",
+            crate::client::endpoint::ProfileId::generate()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("herdr $literal`tick\"quote'");
+        fs::write(
+            &binary,
+            b"#!/bin/sh\n[ \"$1\" = sync ] && [ \"$2\" = exchange-v1 ] || exit 42\ncat\n",
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = RemoteExecutable::PosixShellPath(shell_quote(binary.to_str().unwrap()));
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(catalog_sync_command(&executable))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = b"\x00\xff{\"version\":1}\n".to_vec();
+        let output = super::super::process::wait_with_input_output_limit(
+            child,
+            input.clone(),
+            Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            4096,
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(normalize_remote_output(output).unwrap().stdout, input);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
@@ -3690,6 +4111,8 @@ mod tests {
         let ssh = RemoteSsh {
             target: "fixture".into(),
             session_name: "fixture".into(),
+            identity_file: None,
+            require_catalog_sync: false,
             managed_config: Some(ManagedSshConfig {
                 options: ManagedSshOptions {
                     config_path,
@@ -4251,7 +4674,7 @@ mod tests {
             config.options.control_path,
             setup.options().unwrap().control_path
         );
-        let authentication = authentication_command_with_config("example", config);
+        let authentication = authentication_command_with_config("example", config, "exit");
         let command = &authentication.command;
         assert_eq!(command.get_program(), "ssh");
         let args = command
@@ -4310,6 +4733,8 @@ mod tests {
         let config_path = managed_config.options.config_path.clone();
         let control_path = managed_config.options.control_path.clone().unwrap();
         let ssh = RemoteSsh {
+            identity_file: None,
+            require_catalog_sync: false,
             target: "example".to_string(),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: Some(managed_config),
@@ -4382,6 +4807,8 @@ mod tests {
         );
 
         let ssh = RemoteSsh {
+            identity_file: None,
+            require_catalog_sync: false,
             target: "example".to_string(),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: Some(managed_config),
@@ -4462,6 +4889,8 @@ mod tests {
         )
         .expect("write isolated probe config");
         let ssh = RemoteSsh {
+            identity_file: None,
+            require_catalog_sync: false,
             target: "herdr-probe.invalid".into(),
             session_name: "probe-options".into(),
             managed_config: Some(managed_config),
@@ -4603,6 +5032,8 @@ mod tests {
     #[test]
     fn remote_ssh_commands_compress_without_managed_config() {
         let ssh = RemoteSsh {
+            identity_file: None,
+            require_catalog_sync: false,
             target: "example".to_string(),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: None,
@@ -6122,6 +6553,37 @@ function Get-Process {
             .expect("override source");
         assert_eq!(source.path, PathBuf::from("/tmp/herdr-aarch64"));
         assert!(source.temporary_dir.is_none());
+    }
+
+    #[test]
+    fn bundled_setup_replaces_compatible_published_or_different_local_builds() {
+        let platform = RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        };
+        let mut status = parse_client_status_json(&format!(
+            r#"{{"version":"0.9.5","endpoint_protocol_generation":{}}}"#,
+            crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION
+        ))
+        .unwrap();
+        assert!(status.supports_install_requirement(&platform, false, None));
+        assert!(!status.supports_install_requirement(&platform, false, Some("0.9.5-local.abc")));
+        status.version = Some("0.9.5-local.other".to_string());
+        assert!(!status.supports_install_requirement(&platform, false, Some("0.9.5-local.abc")));
+        status.version = Some("0.9.5-local.abc".to_string());
+        assert!(status.supports_install_requirement(&platform, false, Some("0.9.5-local.abc")));
+        status.endpoint_protocol_generation = None;
+        assert!(!status.supports_install_requirement(&platform, false, Some("0.9.5-local.abc")));
+    }
+
+    #[test]
+    fn embedded_payload_extracts_exact_bytes_and_cleans_up() {
+        let source =
+            extract_bundled_install_source("linux-x86_64", b"embedded Rust binary").unwrap();
+        assert_eq!(fs::read(&source.path).unwrap(), b"embedded Rust binary");
+        let dir = source.temporary_dir.clone().unwrap();
+        source.cleanup();
+        assert!(!dir.exists());
     }
 
     #[cfg(windows)]

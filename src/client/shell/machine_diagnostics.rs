@@ -51,6 +51,24 @@ fn machine_diagnostic_code(profile_id: &impl std::fmt::Display) -> String {
 }
 
 impl ClientShellState {
+    // Only explicit selection calls this; background retries never open a
+    // password prompt or replace another client overlay.
+    pub(super) fn authenticate_machine_selection(
+        &mut self,
+        id: &ClientEndpointId,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        if self.overlay.is_some() || self.popup_pending || self.hits.popup.is_some() {
+            return false;
+        }
+        let needs_auth = self.endpoints.iter().any(|endpoint| {
+            &endpoint.endpoint_id == id
+                && machine_retryable(endpoint)
+                && self.machine_diagnostics.required_for(endpoint)
+        });
+        needs_auth && self.open_machine_authentication(id, outcome)
+    }
+
     pub(crate) fn receive_machine_unavailable(
         &mut self,
         id: &ClientEndpointId,
@@ -166,7 +184,9 @@ impl ClientShellState {
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
             return false;
         }
-        outcome.repaint |= self.retry_machine(&id);
+        if !self.authenticate_machine_selection(&id, outcome) {
+            outcome.repaint |= self.retry_machine(&id);
+        }
         true
     }
 

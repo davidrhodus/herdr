@@ -683,6 +683,37 @@ impl ClientShellState {
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
         self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
+        if self.overlay.is_none() && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(id) = self
+                .hits
+                .machines
+                .iter()
+                .find(|hit| super::contains(hit.import_sessions, point))
+                .map(|hit| hit.endpoint_id.clone())
+            {
+                self.open_machine_imports(&id, outcome);
+                return;
+            }
+        }
+        if self.overlay.is_none()
+            && mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && super::contains(self.hits.add_machine, point)
+        {
+            self.open_add_server(outcome);
+            return;
+        }
+        if self.overlay.is_none() && mouse.kind == MouseEventKind::Down(MouseButton::Right) {
+            if let Some(id) = self
+                .hits
+                .machines
+                .iter()
+                .find(|hit| super::contains(hit.rect, point))
+                .map(|h| h.endpoint_id.clone())
+            {
+                self.open_machine_context(&id, outcome);
+                return;
+            }
+        }
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
             && self.overlay.is_none()
@@ -692,6 +723,9 @@ impl ClientShellState {
             self.mode = self.copy_or_terminal_mode();
             self.navigate_workspace_id = None;
             outcome.repaint = true;
+        }
+        if self.handle_task_overlay_mouse(mouse, outcome) {
+            return;
         }
         if matches!(self.overlay, Some(ClientShellOverlay::Onboarding)) {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left)

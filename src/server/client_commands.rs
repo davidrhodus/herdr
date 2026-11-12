@@ -255,6 +255,36 @@ mod tests {
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
         );
 
+        let additions: BTreeMap<_, _> = actual
+            .iter()
+            .filter(|(name, _)| {
+                name.starts_with("task.")
+                    || name.starts_with("job.")
+                    || name.starts_with("workflow.")
+            })
+            .map(|(name, digest)| (name.clone(), digest.clone()))
+            .collect();
+        let additions_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/endpoint-task-method-shapes-v1.json");
+        if std::env::var_os("HERDR_UPDATE_TASK_METHOD_SHAPES").is_some() {
+            std::fs::write(
+                &additions_path,
+                format!("{}\n", serde_json::to_string_pretty(&additions).unwrap()),
+            )
+            .unwrap();
+        } else {
+            let expected_additions: BTreeMap<String, String> = serde_json::from_str(
+                &std::fs::read_to_string(&additions_path).expect("task method shape fixture"),
+            )
+            .expect("task method digests");
+            assert_eq!(
+                additions, expected_additions,
+                "a task endpoint method changed shape"
+            );
+        }
+        for name in additions.keys() {
+            actual.remove(name);
+        }
         assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"

@@ -234,6 +234,9 @@ impl ClientShellState {
                 },
                 other => other,
             };
+            if self.handle_machine_raw(&event, &mut outcome) {
+                continue;
+            }
             if self.handle_machine_badge_event(&event, &mut outcome) {
                 continue;
             }
@@ -547,6 +550,9 @@ impl ClientShellState {
     }
 
     pub(super) fn modal_paste_target_active(&self) -> bool {
+        if matches!(self.overlay, Some(ClientShellOverlay::Machines(_))) {
+            return true;
+        }
         if self.popup_pending
             || self.popup_input_target().is_some()
             || (self.overlay.is_none()
@@ -567,6 +573,12 @@ impl ClientShellState {
         matches!(
             self.overlay.as_ref(),
             Some(ClientShellOverlay::Rename(_))
+                | Some(ClientShellOverlay::Tasks(
+                    super::tasks::ClientTasksOverlay {
+                        input_focused: true,
+                        ..
+                    }
+                ))
                 | Some(ClientShellOverlay::WorktreeCreate(
                     ClientWorktreeCreateOverlay {
                         creating: false,
@@ -601,6 +613,10 @@ impl ClientShellState {
             return false;
         }
         if let Some(text) = read_clipboard_text() {
+            if matches!(self.overlay, Some(ClientShellOverlay::Machines(_))) {
+                self.handle_machine_raw(&RawInputEvent::Paste(text), outcome);
+                return true;
+            }
             let inserted = self.insert_copy_search_text(&text) || self.insert_overlay_text(&text);
             outcome.repaint |= inserted;
         }

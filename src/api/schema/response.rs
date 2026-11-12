@@ -278,6 +278,38 @@ pub enum ResponseResult {
         projection_revision: u64,
     },
     Ok {},
+    TaskInfo {
+        task: crate::tasks::Task,
+    },
+    TaskList {
+        tasks: Vec<crate::tasks::Task>,
+    },
+    TaskActivity {
+        activities: Vec<crate::tasks::Activity>,
+    },
+    TaskSummary {
+        summary: crate::tasks::ReturnSummary,
+    },
+    TaskDiff {
+        diff: String,
+    },
+    JobInfo {
+        job: crate::tasks::Job,
+    },
+    WorkflowTemplateInfo {
+        template: crate::tasks::WorkflowTemplate,
+    },
+    WorkflowList {
+        templates: Vec<crate::tasks::WorkflowTemplate>,
+        runs: Vec<crate::tasks::WorkflowRun>,
+    },
+    WorkflowInfo {
+        run: crate::tasks::WorkflowRun,
+        ready_steps: Vec<crate::tasks::WorkflowStep>,
+    },
+    TerminalSessions {
+        report: super::TerminalSessionsReport,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

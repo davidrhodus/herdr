@@ -33,8 +33,11 @@ mod server;
 mod server_not_running;
 mod spec;
 mod status;
+mod sync;
 pub(crate) mod tab;
 mod target;
+pub(crate) mod tasks;
+mod terminal_import;
 mod title;
 mod workspace;
 pub(crate) mod workspace_bindings;
@@ -124,6 +127,8 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "config" => run_config_command(&args[2..])?,
         "channel" => run_channel_command(&args[2..])?,
         "machine" => machine::run_machine_command(&args[2..])?,
+        "terminal-import" => terminal_import::run(&args[2..])?,
+        "sync" => sync::run(&args[2..])?,
         "workspace" => workspace::run_workspace_command(&args[2..])?,
         "worktree" => worktree::run_worktree_command(&args[2..])?,
         "tab" => tab::run_tab_command(&args[2..])?,
@@ -133,6 +138,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "pane" => pane::run_pane_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
+        "task" | "job" | "workflow" => tasks::run(command, &args[2..])?,
         "session" => run_session_command(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
@@ -143,6 +149,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
 /// API-backed command groups, which list their commands when run without one.
 fn api_group(name: &str) -> Option<clap::Command> {
     Some(match name {
+        "task" | "job" | "workflow" => tasks::command(name),
         "workspace" => workspace_bindings::command(),
         "worktree" => worktree::command(),
         "tab" => tab::command(),

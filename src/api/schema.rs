@@ -12,6 +12,8 @@ pub mod response;
 pub mod server;
 pub mod session;
 pub mod tabs;
+pub mod tasks;
+pub mod terminal_import;
 pub mod workspaces;
 pub mod worktrees;
 
@@ -26,6 +28,8 @@ pub use response::*;
 pub use server::*;
 pub use session::*;
 pub use tabs::*;
+pub use tasks::*;
+pub use terminal_import::*;
 pub use workspaces::*;
 pub use worktrees::*;
 
@@ -145,6 +149,26 @@ operations::define_operations! {
     PluginPaneOpen(PluginPaneOpenParams) => "plugin.pane.open", true, false;
     PluginPaneFocus(PluginPaneFocusParams) => "plugin.pane.focus", true, false;
     PluginPaneClose(PluginPaneCloseParams) => "plugin.pane.close", true, false;
+    TaskCreate(CreateTask) => "task.create", false, true;
+    TaskUpdate(TaskUpdateParams) => "task.update", false, true;
+    TaskGet(TaskTarget) => "task.get", false, true;
+    TaskList(EmptyParams) => "task.list", false, true;
+    TaskReview(TaskReviewParams) => "task.review", false, true;
+    TaskActivity(TaskActivityParams) => "task.activity", false, true;
+    TaskSummary(TaskSummaryParams) => "task.summary", false, true;
+    TaskAcknowledge(TaskAcknowledgeParams) => "task.acknowledge", false, true;
+    TaskDiff(TaskTarget) => "task.diff", false, true;
+    JobStart(JobStartParams) => "job.start", false, true;
+    JobGet(JobTarget) => "job.get", false, true;
+    JobReport(JobReportParams) => "job.report", false, true;
+    JobCancel(JobTarget) => "job.cancel", false, true;
+    WorkflowSave(WorkflowTemplate) => "workflow.save", false, true;
+    WorkflowList(EmptyParams) => "workflow.list", false, true;
+    WorkflowStart(WorkflowStartParams) => "workflow.start", false, true;
+    WorkflowGet(WorkflowTarget) => "workflow.get", false, true;
+    WorkflowStepStart(WorkflowStepStartParams) => "workflow.step.start", false, true;
+    TerminalSessionsList(EmptyParams) => "terminal.sessions.list", false, false;
+    TerminalSessionImport(TerminalSessionImportParams) => "terminal.sessions.import", true, false;
 }
 
 #[cfg(test)]

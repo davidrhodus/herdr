@@ -27,6 +27,7 @@ pub(crate) struct ClientShellEndpoint {
 pub(super) struct MachineHit {
     pub(super) rect: Rect,
     pub(super) status_badge: Rect,
+    pub(super) import_sessions: Rect,
     pub(super) collapse_toggle: Rect,
     pub(super) endpoint_id: ClientEndpointId,
 }
@@ -45,6 +46,10 @@ pub(crate) enum ClientEndpointFocusTarget {
 
 impl ClientShellState {
     pub(crate) fn set_endpoint_catalog(&mut self, profiles: &[SavedSshEndpoint]) {
+        self.machine_profiles = profiles.to_vec();
+        if let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() {
+            manager.profiles = profiles.to_vec();
+        }
         let mut next = Vec::with_capacity(profiles.len().saturating_add(1));
         let local = self
             .endpoints

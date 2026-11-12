@@ -13,8 +13,8 @@ test:
 
 # Run repository maintenance contract tests
 maintenance-test:
-    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
-    bun test scripts/release-workflows.test.ts
+    {{python}} -m unittest scripts.test_fuzz_regressions scripts.test_agent_detection_manifest_check scripts.test_build_linux_bundle scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
+    bun test scripts/release-workflows.test.ts scripts/parser-fuzz-workflow.test.ts
 
 # Local interactive Windows Terminal input qualification (never runs in normal CI).
 [windows]
@@ -83,6 +83,11 @@ install-hooks:
 [unix]
 build:
     cargo build --release --locked
+
+# Build this source for Linux hosts and embed both architectures in the manager.
+[unix]
+build-linux-bundle:
+    {{python}} scripts/build_linux_bundle.py
 
 [windows]
 build:
@@ -272,3 +277,8 @@ fuzz-parser seconds='60':
 
 fuzz-parser-operations seconds='60':
     cargo +nightly fuzz run parser_operations -- -max_total_time={{quote(seconds)}} -max_len=4096 -dict=fuzz/terminal.dict -timeout=10 -rss_limit_mb=2048
+
+# Test peer sync merge, offline state, and crash recovery.
+peer-sync-test:
+    cargo test --locked -p herdr-sync
+    cargo test --locked --bin herdr catalog_sync -- --test-threads=1

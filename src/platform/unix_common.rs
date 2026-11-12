@@ -641,6 +641,38 @@ pub(crate) fn set_default_plugin_pane_pwd(env: &mut Vec<(String, String)>, cwd: 
     }
 }
 
+pub(crate) struct SetupProcessGroup(Option<i32>);
+impl SetupProcessGroup {
+    pub(crate) fn new(pid: Option<u32>) -> Self {
+        Self(
+            pid.and_then(|p| i32::try_from(p).ok())
+                .filter(|pid| unsafe { libc::getpgid(*pid) == *pid }),
+        )
+    }
+}
+impl Drop for SetupProcessGroup {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+pub(crate) fn cancel_setup_process(pid: Option<u32>) {
+    if let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()) {
+        // Only the owned PTY session may be terminated, never our UI group.
+        unsafe {
+            if libc::getpgid(pid) == pid {
+                libc::kill(-pid, libc::SIGKILL);
+            } else {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

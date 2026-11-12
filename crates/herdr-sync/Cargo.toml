@@ -1,0 +1,13 @@
+[package]
+name = "herdr-sync"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Conflict-safe Herdr server-list synchronization protocol"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

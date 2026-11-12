@@ -1,11 +1,13 @@
 use super::*;
 
 mod settings_overlay;
+mod task_overlays;
 mod worktree_overlays;
 
 #[derive(Default)]
 pub(crate) struct OverlayRender {
     pub(crate) area: Rect,
+    pub(in crate::client::shell) machine_actions: Vec<(Rect, super::machine_manager::Hit)>,
     pub(crate) menu_rows: Vec<(Rect, usize)>,
     pub(crate) primary: Rect,
     pub(crate) clear: Rect,
@@ -31,6 +33,8 @@ pub(crate) struct OverlayRender {
     pub(crate) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) release_notes_max_scroll: usize,
     pub(crate) cursor: Option<crate::protocol::CursorState>,
+    pub(crate) task_max_scroll: usize,
+    pub(crate) task_actions: Vec<(Rect, super::super::tasks::TaskUiAction)>,
 }
 
 pub(crate) fn render_client_overlay(
@@ -67,6 +71,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::Navigator(v) => {
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
         }
+        ClientShellOverlay::Machines(v) => super::machine_manager::render(b, v, p),
         ClientShellOverlay::Settings(v) => {
             settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, p)
         }
@@ -79,6 +84,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
+        ClientShellOverlay::Tasks(v) => task_overlays::render_tasks_overlay(b, v, p),
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
 }
@@ -218,7 +224,7 @@ pub(crate) fn render_context_menu(
     })
 }
 
-fn panel(
+pub(in crate::client::shell) fn panel(
     b: &mut Buffer,
     a: Rect,
     c: ratatui::style::Color,
@@ -261,7 +267,7 @@ fn panel(
     }
     Some(Rect::new(a.x + 1, a.y + 1, a.width - 2, a.height - 2))
 }
-fn popup(a: Rect, w: u16, h: u16) -> Option<Rect> {
+pub(in crate::client::shell) fn popup(a: Rect, w: u16, h: u16) -> Option<Rect> {
     popup_with_width_cap(a, w, h, 4)
 }
 

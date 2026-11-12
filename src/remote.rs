@@ -1,9 +1,13 @@
 mod args;
 mod attach;
+mod bundle;
+pub(crate) mod device_identity;
 mod host;
+pub(crate) mod key_setup;
 mod process;
 mod restart_policy;
 mod saved;
+pub(crate) mod setup_progress;
 #[cfg(unix)]
 mod ssh_agent;
 
@@ -94,9 +98,40 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+pub(crate) fn bounded_discovery_output(
+    child: std::process::Child,
+    timeout: std::time::Duration,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    limit: usize,
+) -> std::io::Result<std::process::Output> {
+    process::wait_with_output_limit(child, timeout, cancelled, limit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_captures_successful_output_without_a_stdin_pipe() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--list", "--format", "terse"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = bounded_discovery_output(
+            child,
+            std::time::Duration::from_secs(10),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            1024 * 1024,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("discovery_captures_successful_output_without_a_stdin_pipe"));
+    }
 
     #[test]
     fn remote_host_key_error_matches_ssh_diagnostics() {

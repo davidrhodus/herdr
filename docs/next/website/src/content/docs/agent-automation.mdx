@@ -125,3 +125,165 @@ herdr pane wait-output w1:p3 --regex "passed|failed" --timeout 120000
 ```
 
 See the [CLI reference](/docs/cli-reference/) for the complete command and option list. Shell completions expose the same command tree interactively.
+
+## Persistent tasks and exact jobs
+
+Tasks keep the request, acceptance criteria, agent and pane, working directory,
+branch, result evidence, tests, and human review after an agent exits. The server
+stores these records beside its session state in `tasks.json`; layout snapshots
+and terminal screen history remain separate. A task marked ready for review is
+reported work awaiting review, not proof that its tests or acceptance criteria
+have been independently verified.
+
+```bash
+herdr task create "Fix login redirect" \
+  --brief "Keep redirects within the application" \
+  --criterion "The regression test passes" \
+  --cwd /absolute/path/to/project --branch fix/login
+herdr task list
+herdr task get task-1
+herdr task diff task-1
+```
+
+Creation returns the task at `.result.task`. Capture its actual `id` rather than
+predicting it. `task create --file task.json` accepts a JSON object containing
+`title`, optional `brief`, `criteria` (an array), `agent`, `pane_id`, `branch`, and
+`cwd`. `task update <id> --file patch.json` applies a structured patch.
+
+Submit a task to an existing idle agent with a unique request key:
+
+```bash
+herdr job start task-1 --target coder --request-key login-attempt-1
+herdr job wait job-2 --timeout 120000
+```
+
+These example IDs are illustrative. Use `.result.job.id` and the returned
+`report_token`. Reusing a request key with the same task and target recovers the
+original job instead of submitting it again. A different attempt needs a new
+key. A transport timeout can leave submission uncertain; inspect the job before
+starting another attempt. Herdr never infers job success from terminal idle.
+
+The submitted prompt tells the agent how to report that exact job. Reports carry
+a correlation token and explicit evidence:
+
+```bash
+herdr job report job-2 --token REPORT_TOKEN --status succeeded \
+  --result "Changed the redirect validation and added a regression test" \
+  --tests "cargo test login_redirect: passed"
+```
+
+Use `--status failed` for failed work or `--status blocked` for a question. The
+alternative `--file report.json` accepts `{"state":"succeeded","results":"...","tests":"..."}`.
+A token correlates a report to a job; the local API socket remains the trust
+boundary. `job wait` polls only that job and normally waits for `succeeded`,
+`failed`, `cancelled`, or `interrupted`. To also return for questions, repeat
+`--until`, for example `--until blocked --until succeeded --until failed`.
+A successful wait command means the requested state was observed; inspect the
+returned job state to determine whether the work succeeded. A timeout returns an
+error without cancelling or resubmitting the job. `job cancel` cancels tracking,
+not the underlying agent process. Active jobs become interrupted after a server
+restart and require a deliberate new attempt.
+
+In the TUI global menu, open **tasks & review** to inspect task cards, review
+reported work, view activity, and read the return-to-work summary. The same
+records are available through CLI commands:
+
+```bash
+herdr task review task-1 accept --note "Diff reviewed; regression test verified"
+herdr task review task-1 request_changes --note "Cover external redirect URLs"
+herdr task activity --query redirect --after 0 --limit 100
+herdr task summary --consumer david
+herdr task acknowledge --consumer david --through 27
+```
+
+The TUI supports keyboard and mouse actions. Keys `1`–`4` switch between the
+review inbox, all tasks, activity, and the since-last summary. `Enter` opens a
+task; `/` edits the search or review note. On a task, `a` accepts the result,
+`c` requests changes with the entered note, `p` focuses its live pane, and `d`
+opens the diff. `r` refreshes and `Esc` returns or closes. In the summary,
+`a` explicitly acknowledges the displayed sequence. Closing it leaves the
+cursor unchanged.
+
+Reading a summary does not advance its cursor. Acknowledge only the returned
+`through` sequence after reviewing the changes. Each consumer keeps a separate
+cursor, so one person or script does not clear another's unread activity.
+
+## Reusable workflows
+
+The built-in `implement-test-review` template creates dependency-ordered tasks.
+Each step becomes eligible after its dependencies are explicitly accepted.
+Running a step again returns its existing task. Updating a saved template does
+not alter an existing run.
+
+Launch a saved setup into a new isolated worktree with one command:
+
+```bash
+herdr workflow setup implement-test-review \
+  --brief "Fix login redirects and verify the regression" \
+  --workspace w1 --branch fix/login --kind codex
+```
+
+This creates a worktree and workspace, starts a uniquely named agent there,
+waits for it to become interactive, and submits the first eligible workflow
+step. The JSON response contains the run, workspace, worktree, pane, agent name,
+task, request key, and job under `.result.resources`. If a template has several
+initial steps, setup launches the first one in template order; use `workflow
+launch` to submit the others to additional idle agents.
+
+The command retains created resources after a partial failure and returns them
+under `.error.resources`, together with the failed stage and original cause.
+Inspect those resources before retrying. In particular, a transport failure can
+mean a process or job was started even though its response did not arrive.
+Setup does not delete worktrees or replay uncertain submissions automatically.
+
+After reviewing and accepting the implement task, use the returned run ID and
+agent name to launch `test`, then `review` after accepting the test task. These
+steps use the same worktree so that uncommitted changes remain available.
+
+To create a run in an existing checkout instead:
+
+```bash
+herdr workflow list
+herdr workflow start implement-test-review \
+  --brief "Fix login redirects and verify the regression" \
+  --cwd /absolute/path/to/worktree
+herdr workflow get workflow-1
+herdr workflow launch workflow-1 implement \
+  --target coder --request-key login-implement-1
+```
+
+`workflow launch` creates the eligible step's task, then submits it to the named
+idle agent using the request key. `workflow step-start <run> <step>` creates the
+task without submitting it. After the implement task is reported and accepted,
+launch the `test` step; after accepting test evidence, launch `review`. Later
+steps use the same code checkout; put independent changes in separate worktrees.
+
+To prepare an isolated checkout with existing primitives:
+
+```bash
+created=$(herdr worktree create --workspace w1 --branch fix/login)
+pane=$(printf '%s\n' "$created" | jq -r '.result.root_pane.pane_id')
+herdr agent start coder --kind codex --pane "$pane"
+```
+
+Use the returned worktree path as the workflow `--cwd`. Starting a workflow does
+not create processes or checkouts by itself. Explicit launch keeps dependency
+review and agent selection under your control.
+
+Save a custom template with `herdr workflow save --file workflow.json`:
+
+```json
+{
+  "id": "implement-test-review-custom",
+  "title": "Implement, test, review",
+  "steps": [
+    {"id":"implement","title":"Implement","prompt":"Implement the change","criteria":["Requested behavior works"]},
+    {"id":"test","title":"Test","prompt":"Run the regression checks","depends_on":["implement"]},
+    {"id":"review","title":"Review","prompt":"Review the diff and test evidence","depends_on":["test"]}
+  ]
+}
+```
+
+Templates reject missing dependencies and cycles. New task and workflow actions
+use optional API methods; older servers continue to support their existing pane
+and agent operations.

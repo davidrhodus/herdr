@@ -1206,6 +1206,18 @@ pub fn process_exists(pid: u32) -> bool {
     }
 }
 
+/// Installed Tailscale CLI when the executable is absent from PATH.
+pub(crate) fn tailscale_cli_fallback() -> Option<PathBuf> {
+    [
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "/opt/homebrew/bin/tailscale",
+        "/usr/local/bin/tailscale",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

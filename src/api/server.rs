@@ -381,6 +381,40 @@ fn handle_connection_with_stop(
     let changes_ui = request_changes_ui(&request);
     crate::logging::api_request_started(&request_id, method, changes_ui);
 
+    // Discovery may scan /proc; keep it on this connection worker, never the
+    // server event/render loop. Import is revalidated here and again by the
+    // helper after any administrator authentication.
+    match &request.method {
+        Method::TerminalSessionsList(_) => {
+            let response = match crate::platform::terminal_import::discover() {
+                Ok(report) => serde_json::to_string(&SuccessResponse {
+                    id: request_id.clone(),
+                    result: ResponseResult::TerminalSessions { report },
+                })
+                .map_err(io::Error::other)?,
+                Err(error) => error_response_json(
+                    request_id.clone(),
+                    "terminal_discovery_failed",
+                    error.to_string(),
+                ),
+            };
+            return write_text_line_allow_disconnect(&mut stream, &response);
+        }
+        Method::TerminalSessionImport(params) => {
+            if let Err(error) = crate::platform::terminal_import::validate(&params.source) {
+                return write_text_line_allow_disconnect(
+                    &mut stream,
+                    &error_response_json(
+                        request_id.clone(),
+                        "terminal_import_unavailable",
+                        error.to_string(),
+                    ),
+                );
+            }
+        }
+        _ => {}
+    }
+
     match request.method {
         #[cfg(unix)]
         Method::ServerSshAgentRegister(params) => {

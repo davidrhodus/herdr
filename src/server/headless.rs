@@ -2953,6 +2953,12 @@ impl HeadlessServer {
             return true;
         }
 
+        if matches!(&msg.request.method, api::schema::Method::TaskDiff(_)) {
+            self.app
+                .handle_deferred_task_diff(msg.request, msg.respond_to);
+            return false;
+        }
+
         if let api::schema::Method::NotificationShow(params) = &msg.request.method {
             let response =
                 self.handle_notification_show_api(msg.request.id.clone(), params.clone());

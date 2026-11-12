@@ -4,6 +4,8 @@ pub(super) fn watch_profiles(
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     should_quit: Arc<AtomicBool>,
 ) {
+    endpoint::catalog_sync::start_worker(should_quit.clone());
+    direct_sync::start_worker(event_tx.clone(), should_quit.clone());
     // One bounded read per second per client, independent of rendering and pane count.
     std::thread::spawn(move || {
         let mut previous = None;

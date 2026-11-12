@@ -1759,6 +1759,56 @@
           ],
           "type": "object"
         },
+        "CreateTask": {
+          "properties": {
+            "agent": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "brief": {
+              "default": "",
+              "type": "string"
+            },
+            "criteria": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "cwd": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "type": "object"
+        },
         "EmptyParams": {
           "type": "object"
         },
@@ -2192,6 +2242,85 @@
           },
           "required": [
             "target"
+          ],
+          "type": "object"
+        },
+        "JobReport": {
+          "properties": {
+            "results": {
+              "default": "",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/request/$defs/JobState"
+            },
+            "tests": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        "JobReportParams": {
+          "properties": {
+            "job_id": {
+              "type": "string"
+            },
+            "report": {
+              "$ref": "#/schemas/request/$defs/JobReport"
+            },
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_id",
+            "token",
+            "report"
+          ],
+          "type": "object"
+        },
+        "JobStartParams": {
+          "properties": {
+            "request_key": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "request_key",
+            "target"
+          ],
+          "type": "object"
+        },
+        "JobState": {
+          "enum": [
+            "running",
+            "blocked",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        "JobTarget": {
+          "properties": {
+            "job_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_id"
           ],
           "type": "object"
         },
@@ -3856,6 +3985,13 @@
           ],
           "type": "object"
         },
+        "ReviewDecision": {
+          "enum": [
+            "accept",
+            "request_changes"
+          ],
+          "type": "string"
+        },
         "ServerLiveHandoffParams": {
           "properties": {
             "expected_protocol": {
@@ -4357,6 +4493,236 @@
           ],
           "type": "object"
         },
+        "TaskAcknowledgeParams": {
+          "properties": {
+            "consumer": {
+              "type": "string"
+            },
+            "through": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "consumer",
+            "through"
+          ],
+          "type": "object"
+        },
+        "TaskActivityParams": {
+          "properties": {
+            "after": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "limit": {
+              "default": 100,
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "query": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "TaskPatch": {
+          "properties": {
+            "agent": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "brief": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "criteria": {
+              "default": null,
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "cwd": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TaskStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "title": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "TaskReviewParams": {
+          "properties": {
+            "decision": {
+              "$ref": "#/schemas/request/$defs/ReviewDecision"
+            },
+            "note": {
+              "default": "",
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "decision"
+          ],
+          "type": "object"
+        },
+        "TaskStatus": {
+          "enum": [
+            "ready",
+            "running",
+            "blocked",
+            "review",
+            "changes_requested",
+            "accepted",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "TaskSummaryParams": {
+          "properties": {
+            "consumer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "consumer"
+          ],
+          "type": "object"
+        },
+        "TaskTarget": {
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "TaskUpdateParams": {
+          "properties": {
+            "patch": {
+              "$ref": "#/schemas/request/$defs/TaskPatch"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "patch"
+          ],
+          "type": "object"
+        },
+        "TerminalSessionIdentity": {
+          "additionalProperties": false,
+          "properties": {
+            "boot_id": {
+              "type": "string"
+            },
+            "pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session_id": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "start_ticks": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tty": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "uid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "boot_id",
+            "uid",
+            "pid",
+            "start_ticks",
+            "session_id",
+            "tty"
+          ],
+          "type": "object"
+        },
+        "TerminalSessionImportParams": {
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "$ref": "#/schemas/request/$defs/TerminalSessionIdentity"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "type": "object"
+        },
         "ToastHerdrPosition": {
           "enum": [
             "top-left",
@@ -4365,6 +4731,116 @@
             "bottom-right"
           ],
           "type": "string"
+        },
+        "WorkflowStartParams": {
+          "properties": {
+            "brief": {
+              "type": "string"
+            },
+            "cwd": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "template_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "template_id",
+            "brief"
+          ],
+          "type": "object"
+        },
+        "WorkflowStep": {
+          "properties": {
+            "agent": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "criteria": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "depends_on": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "prompt"
+          ],
+          "type": "object"
+        },
+        "WorkflowStepStartParams": {
+          "properties": {
+            "run_id": {
+              "type": "string"
+            },
+            "step_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id",
+            "step_id"
+          ],
+          "type": "object"
+        },
+        "WorkflowTarget": {
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "WorkflowTemplate": {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/schemas/request/$defs/WorkflowStep"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "steps"
+          ],
+          "type": "object"
         },
         "WorkspaceCloseParams": {
           "properties": {
@@ -6312,6 +6788,326 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.create",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CreateTask"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.update",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskUpdateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.review",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskReviewParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.activity",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskActivityParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.summary",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskSummaryParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.acknowledge",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskAcknowledgeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "task.diff",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TaskTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "job.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/JobStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "job.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/JobTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "job.report",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/JobReportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "job.cancel",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/JobTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workflow.save",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkflowTemplate"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workflow.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workflow.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkflowStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workflow.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkflowTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workflow.step.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkflowStepStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "terminal.sessions.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "terminal.sessions.import",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TerminalSessionImportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -6540,6 +7336,45 @@
     },
     "success_response": {
       "$defs": {
+        "Activity": {
+          "properties": {
+            "at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "job_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "task_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "seq",
+            "at_ms",
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
         "AgentInfo": {
           "properties": {
             "agent": {
@@ -7485,6 +8320,35 @@
           ],
           "type": "string"
         },
+        "ExternalTerminalSession": {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "identity": {
+              "$ref": "#/schemas/success_response/$defs/TerminalSessionIdentity"
+            },
+            "process_count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "terminal": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "identity",
+            "terminal",
+            "command",
+            "cwd",
+            "process_count"
+          ],
+          "type": "object"
+        },
         "InstalledPluginInfo": {
           "properties": {
             "actions": {
@@ -7668,6 +8532,115 @@
             "messages"
           ],
           "type": "object"
+        },
+        "Job": {
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "created_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "launch_target": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "observed_state": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "report": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/JobReport"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "report_token": {
+              "description": "Correlation token, not an authorization boundary. The local socket remains trusted.",
+              "type": "string"
+            },
+            "request_key": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/JobState"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "terminal_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "updated_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "task_id",
+            "request_key",
+            "report_token",
+            "pane_id",
+            "agent",
+            "state",
+            "created_at_ms",
+            "updated_at_ms"
+          ],
+          "type": "object"
+        },
+        "JobReport": {
+          "properties": {
+            "results": {
+              "default": "",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/JobState"
+            },
+            "tests": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        "JobState": {
+          "enum": [
+            "running",
+            "blocked",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
         },
         "LayoutDescription": {
           "properties": {
@@ -10415,8 +11388,270 @@
                 "type"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "task": {
+                  "$ref": "#/schemas/success_response/$defs/Task"
+                },
+                "type": {
+                  "const": "task_info",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "task"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "tasks": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/Task"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "task_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "tasks"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "activities": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/Activity"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "task_activity",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "activities"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "summary": {
+                  "$ref": "#/schemas/success_response/$defs/ReturnSummary"
+                },
+                "type": {
+                  "const": "task_summary",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "summary"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "diff": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "task_diff",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "diff"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "job": {
+                  "$ref": "#/schemas/success_response/$defs/Job"
+                },
+                "type": {
+                  "const": "job_info",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "job"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "template": {
+                  "$ref": "#/schemas/success_response/$defs/WorkflowTemplate"
+                },
+                "type": {
+                  "const": "workflow_template_info",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "template"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "runs": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkflowRun"
+                  },
+                  "type": "array"
+                },
+                "templates": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkflowTemplate"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "workflow_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "templates",
+                "runs"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "ready_steps": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/WorkflowStep"
+                  },
+                  "type": "array"
+                },
+                "run": {
+                  "$ref": "#/schemas/success_response/$defs/WorkflowRun"
+                },
+                "type": {
+                  "const": "workflow_info",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "run",
+                "ready_steps"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "report": {
+                  "$ref": "#/schemas/success_response/$defs/TerminalSessionsReport"
+                },
+                "type": {
+                  "const": "terminal_sessions",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "report"
+              ],
+              "type": "object"
             }
           ]
+        },
+        "ReturnSummary": {
+          "properties": {
+            "activities": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/Activity"
+              },
+              "type": "array"
+            },
+            "after": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "blocked": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/Task"
+              },
+              "type": "array"
+            },
+            "consumer": {
+              "type": "string"
+            },
+            "failed_jobs": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/Job"
+              },
+              "type": "array"
+            },
+            "needs_review": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/Task"
+              },
+              "type": "array"
+            },
+            "through": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "consumer",
+            "after",
+            "through",
+            "activities",
+            "needs_review",
+            "blocked",
+            "failed_jobs"
+          ],
+          "type": "object"
+        },
+        "Review": {
+          "properties": {
+            "at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "decision": {
+              "$ref": "#/schemas/success_response/$defs/ReviewDecision"
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "note",
+            "at_ms"
+          ],
+          "type": "object"
+        },
+        "ReviewDecision": {
+          "enum": [
+            "accept",
+            "request_changes"
+          ],
+          "type": "string"
         },
         "ServerCapabilities": {
           "properties": {
@@ -10570,6 +11805,290 @@
             "focused",
             "pane_count",
             "agent_status"
+          ],
+          "type": "object"
+        },
+        "Task": {
+          "properties": {
+            "agent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "brief": {
+              "type": "string"
+            },
+            "created_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "criteria": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "job_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "results": {
+              "type": "string"
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/Review"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/TaskStatus"
+            },
+            "tests": {
+              "description": "Reported test evidence, not inferred from terminal output.",
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "updated_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workflow_run_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workflow_step_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "brief",
+            "criteria",
+            "status",
+            "results",
+            "tests",
+            "job_ids",
+            "created_at_ms",
+            "updated_at_ms"
+          ],
+          "type": "object"
+        },
+        "TaskStatus": {
+          "enum": [
+            "ready",
+            "running",
+            "blocked",
+            "review",
+            "changes_requested",
+            "accepted",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "TerminalSessionIdentity": {
+          "additionalProperties": false,
+          "properties": {
+            "boot_id": {
+              "type": "string"
+            },
+            "pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session_id": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "start_ticks": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tty": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "uid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "boot_id",
+            "uid",
+            "pid",
+            "start_ticks",
+            "session_id",
+            "tty"
+          ],
+          "type": "object"
+        },
+        "TerminalSessionsReport": {
+          "properties": {
+            "helper_ready": {
+              "type": "boolean"
+            },
+            "message": {
+              "type": "string"
+            },
+            "sessions": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ExternalTerminalSession"
+              },
+              "type": "array"
+            },
+            "supported": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "supported",
+            "helper_ready",
+            "message",
+            "sessions"
+          ],
+          "type": "object"
+        },
+        "WorkflowRun": {
+          "properties": {
+            "brief": {
+              "type": "string"
+            },
+            "created_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "tasks": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "template": {
+              "$ref": "#/schemas/success_response/$defs/WorkflowTemplate",
+              "description": "Snapshot the template so subsequent template edits do not alter running work."
+            }
+          },
+          "required": [
+            "id",
+            "template",
+            "brief",
+            "tasks",
+            "created_at_ms"
+          ],
+          "type": "object"
+        },
+        "WorkflowStep": {
+          "properties": {
+            "agent": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "criteria": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "depends_on": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "prompt"
+          ],
+          "type": "object"
+        },
+        "WorkflowTemplate": {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/WorkflowStep"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "steps"
           ],
           "type": "object"
         },

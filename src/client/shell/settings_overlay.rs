@@ -128,6 +128,7 @@ pub(super) fn render_settings_overlay(
     );
     let mut choice_hits = Vec::new();
     match settings.section {
+        ClientSettingsSection::Machines => {}
         ClientSettingsSection::Theme => {
             let visible = usize::from(content.height);
             let scroll = settings.selected.saturating_sub(visible.saturating_sub(1));

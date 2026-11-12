@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RemoteServerRestartReason {
+    Version,
     EndpointProtocol,
     SurfaceInterest,
     HealthCheck,

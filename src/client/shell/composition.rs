@@ -66,7 +66,7 @@ impl ClientShellState {
             tab_scroll: &mut self.tab_scroll,
             reveal_focused_workspace: &mut self.reveal_focused_workspace,
             reveal_focused_tab: &mut self.reveal_focused_tab,
-            sidebar_collapsed: false,
+            sidebar_collapsed: self.sidebar_collapsed,
             sidebar_section_split: self.sidebar_section_split,
             tab_drag_insert_index: None,
             selected_workspace_id: self
@@ -83,6 +83,14 @@ impl ClientShellState {
                 &mut buffer,
                 sidebar,
                 snapshot,
+                &self.config,
+                &mut render_state,
+                &mut self.hits,
+            );
+        } else if self.sidebar_collapsed {
+            super::endpoint_sidebar::render_collapsed(
+                &mut buffer,
+                sidebar,
                 &self.config,
                 &mut render_state,
                 &mut self.hits,
@@ -135,6 +143,12 @@ impl ClientShellState {
             &self.config.keybinds,
             &self.config.palette,
         );
+        super::machine_manager::paint_launcher(
+            &mut buffer,
+            sidebar,
+            &self.config.palette,
+            &mut self.hits,
+        );
         if let Some(notice) = &self.visible_endpoint_notice {
             self.hits.notification_toast = endpoint_notices::render_notice(
                 &mut buffer,
@@ -144,7 +158,19 @@ impl ClientShellState {
                 &self.config.palette,
             );
         }
-        FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
+        let cursor = if let Some(ClientShellOverlay::Machines(manager)) = &self.overlay {
+            if let Some(rendered) =
+                super::machine_manager::render(&mut buffer, manager, &self.config.palette)
+            {
+                self.hits.machine_actions = rendered.machine_actions;
+                rendered.cursor
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &[])
     }
 
     pub(crate) fn compose(
@@ -672,6 +698,9 @@ impl ClientShellState {
                     &self.config.palette,
                 )?;
                 occlusion.cover(rendered.area);
+                self.hits.task_max_scroll = rendered.task_max_scroll;
+                self.hits.task_actions = rendered.task_actions;
+                self.hits.machine_actions = rendered.machine_actions;
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.overlay_clear = rendered.clear;
                 self.hits.overlay_cancel = rendered.cancel;
@@ -700,6 +729,9 @@ impl ClientShellState {
                 rendered.cursor
             };
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+        }
+        if let Some(ClientShellOverlay::Tasks(view)) = self.overlay.as_mut() {
+            view.scroll = view.scroll.min(self.hits.task_max_scroll);
         }
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);

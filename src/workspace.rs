@@ -345,7 +345,7 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new_with_tab(
+    pub(crate) fn new_with_tab(
         initial_cwd: PathBuf,
         rows: u16,
         cols: u16,

@@ -46,6 +46,82 @@ pub(super) fn launch_cwd_for_terminal(
 }
 
 impl App {
+    pub(super) fn import_terminal_workspace(
+        &mut self,
+        id: String,
+        params: crate::api::schema::TerminalSessionImportParams,
+    ) -> String {
+        use crate::app::api::responses::{encode_error, encode_success};
+        let workspaces = &self.state.workspaces;
+        self.terminal_imports
+            .retain(|_, id| workspaces.iter().any(|workspace| &workspace.id == id));
+        let token = match crate::terminal_import::encode(&params.source) {
+            Ok(token) => token,
+            Err(error) => return encode_error(id, "invalid_terminal", error.to_string()),
+        };
+        if let Some(workspace) = self.terminal_imports.get(&token).and_then(|workspace| {
+            self.state
+                .workspaces
+                .iter()
+                .position(|w| &w.id == workspace)
+        }) {
+            return encode_success(
+                id,
+                self.workspace_created_result(workspace)
+                    .expect("existing imported workspace"),
+            );
+        }
+        let executable = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => return encode_error(id, "import_unavailable", error.to_string()),
+        };
+        let argv = vec![
+            executable.to_string_lossy().into_owned(),
+            "terminal-import".into(),
+            "run".into(),
+            token.clone(),
+        ];
+        let cwd = self.resolve_new_terminal_cwd(None);
+        let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
+        let created = Workspace::new_with_tab(
+            cwd,
+            rows,
+            cols,
+            self.state.pane_scrollback_limit_bytes,
+            self.state.host_terminal_theme,
+            self.pane_host_terminal_appearance(),
+            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+            self.event_tx.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+            Some(&argv),
+            Vec::new(),
+        );
+        let (mut workspace, mut terminal, runtime) = match created {
+            Ok(value) => value,
+            Err(error) => return encode_error(id, "terminal_import_failed", error.to_string()),
+        };
+        workspace.set_custom_name(format!("Imported terminal {}", params.source.pid));
+        // Never replay a PID-bearing command after a cold restart: that PID may
+        // have been reused. Live handoff transfers the running proxy's PTY.
+        terminal.launch_argv = None;
+        terminal.respawn_shell_on_exit = true;
+        self.terminal_imports.insert(token, workspace.id.clone());
+        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
+        self.state.terminals.insert(terminal.id.clone(), terminal);
+        self.state.workspaces.push(workspace);
+        let index = self.state.workspaces.len() - 1;
+        let root = self.state.workspaces[index].tabs[0].root_pane;
+        self.state.remove_alias_shadowed_by_new_pane(root);
+        self.emit_workspace_open_events(index);
+        self.schedule_session_save();
+        encode_success(
+            id,
+            self.workspace_created_result(index)
+                .expect("new import workspace"),
+        )
+    }
+
     pub(super) fn seed_cwd_from_workspace(&self, ws_idx: usize) -> Option<PathBuf> {
         self.state
             .workspaces

@@ -10,6 +10,7 @@ pub(crate) mod plugins;
 pub(super) mod responses;
 mod session;
 mod tabs;
+mod tasks;
 mod workspaces;
 mod worktrees;
 
@@ -694,6 +695,38 @@ impl App {
             return;
         };
         let workspace_id = self.public_workspace_id(update.ws_idx);
+        let task_terminal_id = self
+            .state
+            .workspaces
+            .get(update.ws_idx)
+            .and_then(|ws| ws.terminal_id(update.pane_id))
+            .cloned();
+        if let Some(store) = self.task_store.as_mut().filter(|_| {
+            update.agent_released
+                || update.previous_state != update.state
+                || update.previous_agent_label != update.agent_label
+        }) {
+            let status = if update.agent_released {
+                "exited"
+            } else if update.previous_agent_label != update.agent_label {
+                "replaced"
+            } else {
+                match update.state {
+                    crate::detect::AgentState::Idle => "idle",
+                    crate::detect::AgentState::Working => "working",
+                    crate::detect::AgentState::Blocked => "blocked",
+                    _ => "unknown",
+                }
+            };
+            let result = if let Some(terminal_id) = &task_terminal_id {
+                store.observe_terminal_state(terminal_id.as_str(), &pane_id, status)
+            } else {
+                store.observe_agent_state(&pane_id, status)
+            };
+            if let Err(error) = result {
+                tracing::warn!(%error, "could not persist task lifecycle observation");
+            }
+        }
 
         if update.agent_name_changed {
             self.emit_pane_updated(update.ws_idx, update.pane_id);
@@ -936,12 +969,25 @@ impl App {
         &mut self,
         request: crate::api::schema::Request,
     ) -> String {
+        if tasks::is_task_method(&request.method) {
+            return self.handle_task_request(request);
+        }
         self.sync_pending_terminal_titles();
         use crate::api::schema::{
             ErrorBody, ErrorResponse, Method, ResponseResult, SuccessResponse,
         };
 
         let response = match request.method {
+            Method::TerminalSessionsList(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "connection_worker_only",
+                    "Use the JSON API for terminal discovery",
+                );
+            }
+            Method::TerminalSessionImport(params) => {
+                return self.import_terminal_workspace(request.id, params);
+            }
             Method::ServerStop(_) => {
                 self.state.should_quit = true;
                 SuccessResponse {

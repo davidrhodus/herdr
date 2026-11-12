@@ -103,9 +103,12 @@ impl AppPolicy {
 }
 
 pub struct App {
+    pub(crate) task_store: Option<crate::tasks::TaskStore>,
+    pub(crate) task_submissions: HashMap<String, std::sync::mpsc::Receiver<std::io::Result<()>>>,
     pub state: AppState,
     pub(crate) pixel_mouse_available: bool,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
+    pub(crate) terminal_imports: std::collections::HashMap<String, String>,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
@@ -619,6 +622,8 @@ impl App {
             custom_commands::EndpointCommandRegistry::new(&state.keybinds.custom_commands);
 
         let mut app = Self {
+            task_store: None,
+            task_submissions: HashMap::new(),
             plugin_installation_leases,
             plugin_installation_cleanup_allowed,
             config_diagnostic_deadline: None,
@@ -627,6 +632,7 @@ impl App {
             state,
             pixel_mouse_available: false,
             terminal_runtimes: restored_terminal_runtimes,
+            terminal_imports: Default::default(),
             event_tx,
             event_rx,
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,

@@ -83,7 +83,11 @@ pub(super) enum ClientMobileTarget {
 
 #[derive(Default)]
 pub(super) struct ShellHitMap {
+    pub(super) task_max_scroll: usize,
+    pub(super) task_actions: Vec<(Rect, super::tasks::TaskUiAction)>,
     pub(super) machines: Vec<MachineHit>,
+    pub(super) add_machine: Rect,
+    pub(super) machine_actions: Vec<(Rect, super::machine_manager::Hit)>,
     pub(super) workspaces: Vec<WorkspaceHit>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
@@ -246,6 +250,7 @@ pub(crate) enum ClientShellAction {
         boot_id: String,
         request: Box<crate::api::schema::Request>,
     },
+    MachineManager(crate::client::machine_setup::Command),
     ClipboardWrite(Vec<u8>),
     OpenSafeWebUrl(String),
     ActivateEndpoint {
@@ -288,9 +293,11 @@ pub(super) enum ClientShellOverlayKind {
     WorktreeCreate,
     WorktreeOpen,
     WorktreeRemove,
+    Tasks,
     ContextMenu,
     GlobalMenu,
     Settings,
+    Machines,
 }
 
 #[derive(Debug)]
@@ -388,6 +395,7 @@ pub(super) enum ClientSettingsSection {
     Sound,
     Toast,
     Integrations,
+    Machines,
 }
 
 impl ClientSettingsSection {
@@ -397,6 +405,7 @@ impl ClientSettingsSection {
         Self::Sound,
         Self::Toast,
         Self::Integrations,
+        Self::Machines,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -406,6 +415,7 @@ impl ClientSettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::Integrations => "integrations",
+            Self::Machines => "machines",
         }
     }
 }
@@ -591,9 +601,11 @@ pub(super) enum ClientShellOverlay {
     WorktreeCreate(ClientWorktreeCreateOverlay),
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
+    Tasks(super::tasks::ClientTasksOverlay),
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
+    Machines(Box<super::machine_manager::Manager>),
 }
 
 impl ClientShellOverlay {
@@ -609,15 +621,22 @@ impl ClientShellOverlay {
             Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
+            Self::Tasks(_) => ClientShellOverlayKind::Tasks,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
+            Self::Machines(_) => ClientShellOverlayKind::Machines,
         }
     }
 }
 
 #[derive(Debug)]
 pub(super) enum PendingEndpointKind {
+    Tasks {
+        endpoint_id: ClientEndpointId,
+        overlay_id: u64,
+        request: super::tasks::TaskRequestKind,
+    },
     Generic,
     ProductAnnouncementDismiss {
         version: String,
@@ -897,6 +916,8 @@ pub(crate) struct ClientShellState {
     pub(super) selection_repaint_deadline: Option<std::time::Instant>,
     pub(super) hits: ShellHitMap,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
+    pub(super) machine_profiles: Vec<SavedSshEndpoint>,
+    pub(super) direct_sync: crate::client::direct_sync::View,
     pub(super) active_endpoint_id: ClientEndpointId,
     pub(super) collapsed_endpoints: HashSet<ClientEndpointId>,
     pub(super) mode: ClientShellMode,
@@ -1071,6 +1092,8 @@ impl ClientShellState {
             selection_repaint_deadline: None,
             hits: ShellHitMap::default(),
             endpoints: vec![local_endpoint()],
+            machine_profiles: Vec::new(),
+            direct_sync: Default::default(),
             active_endpoint_id: ClientEndpointId::Local,
             collapsed_endpoints: HashSet::new(),
             mode: ClientShellMode::Terminal,
@@ -1270,10 +1293,12 @@ impl ClientShellState {
         self.endpoint_error_deadline = None;
         self.navigate_workspace_id = None;
         self.pending_workspace_highlight = None;
-        self.overlay = self
-            .config
-            .startup_onboarding
-            .then_some(ClientShellOverlay::Onboarding);
+        if !matches!(self.overlay, Some(ClientShellOverlay::Machines(_))) {
+            self.overlay = self
+                .config
+                .startup_onboarding
+                .then_some(ClientShellOverlay::Onboarding);
+        }
         self.previous_pane_id = None;
         self.pane_mouse_gesture = None;
         self.link_hover = None;
@@ -1680,7 +1705,11 @@ impl ClientShellState {
             self.navigate_workspace_id = None;
             if !matches!(
                 self.overlay.as_ref(),
-                Some(ClientShellOverlay::Onboarding | ClientShellOverlay::ProductAnnouncement(_))
+                Some(
+                    ClientShellOverlay::Onboarding
+                        | ClientShellOverlay::ProductAnnouncement(_)
+                        | ClientShellOverlay::Machines(_)
+                )
             ) {
                 self.overlay = self
                     .config

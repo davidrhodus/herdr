@@ -95,10 +95,15 @@ impl SavedSshApiBridge {
             }
         };
         let command = super::attach::cached_remote_api_command(&metadata, session);
+        static NEXT_API_BRIDGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let sequence = NEXT_API_BRIDGE.fetch_add(1, Ordering::Relaxed);
         let path = crate::platform::remote_bridge_endpoint_path(
-            &format!("herdr-api-ssh-{}-{profile_id}.sock", std::process::id()),
             &format!(
-                "herdr-api-{}-{}.sock",
+                "herdr-api-ssh-{}-{sequence}-{profile_id}.sock",
+                std::process::id()
+            ),
+            &format!(
+                "herdr-api-{}-{sequence}-{}.sock",
                 std::process::id(),
                 &profile_id[..16]
             ),

@@ -518,6 +518,23 @@ pub(crate) fn write_existing_config(
     config_backup::write_existing(target, contents)
 }
 
+pub(crate) struct SetupProcessGroup;
+impl SetupProcessGroup {
+    pub(crate) fn new(_pid: Option<u32>) -> Self {
+        Self
+    }
+}
+
+pub(crate) fn cancel_setup_process(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 #[cfg(test)]
 fn config_security_descriptor(
     path: &std::path::Path,
@@ -3464,6 +3481,14 @@ impl Drop for InputSourceRestore {
             }
         }
     }
+}
+
+/// Installed Tailscale CLI when the executable is absent from PATH.
+pub(crate) fn tailscale_cli_fallback() -> Option<PathBuf> {
+    std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .map(|root| root.join("Tailscale/tailscale.exe"))
+        .filter(|path| path.is_file())
 }
 
 #[cfg(test)]
