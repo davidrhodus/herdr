@@ -586,6 +586,8 @@ pub(crate) mod sync_service;
 #[path = "sync_service_unsupported.rs"]
 pub(crate) mod sync_service;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod sync_service_environment;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod sync_service_identity;
 
 #[cfg(not(unix))]

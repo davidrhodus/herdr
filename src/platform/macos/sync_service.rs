@@ -18,13 +18,23 @@ fn xml(value: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
-fn spec(executable: &Path, config: &Path, state: &Path, version: &str) -> String {
+fn spec(
+    executable: &Path,
+    config: &Path,
+    state: &Path,
+    version: &str,
+    environment: &[(String, String)],
+) -> String {
     let label = label(config, state);
     let exe = xml(&executable.to_string_lossy());
     let config = xml(&config.parent().unwrap_or(config).to_string_lossy());
     let state_home = xml(&state.parent().unwrap_or(state).to_string_lossy());
     let log = xml(&state.join("client/sync-service.log").to_string_lossy());
     let version = xml(version);
+    let environment: String = environment
+        .iter()
+        .map(|(key, value)| format!("<key>{}</key><string>{}</string>\n", xml(key), xml(value)))
+        .collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -36,7 +46,7 @@ fn spec(executable: &Path, config: &Path, state: &Path, version: &str) -> String
 <key>EnvironmentVariables</key><dict>
 <key>XDG_CONFIG_HOME</key><string>{config}</string><key>XDG_STATE_HOME</key><string>{state_home}</string>
 <key>HERDR_SYNC_SERVICE</key><string>1</string><key>HERDR_SYNC_BUILD</key><string>{version}</string>
-<key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin</string>
+{environment}
 </dict><key>StandardOutPath</key><string>{log}</string><key>StandardErrorPath</key><string>{log}</string>
 </dict></plist>
 "#
@@ -71,7 +81,13 @@ pub(crate) fn install(
     version: &str,
 ) -> io::Result<()> {
     let path = plist_path(config, state)?;
-    let contents = spec(executable, config, state, version);
+    let contents = spec(
+        executable,
+        config,
+        state,
+        version,
+        &super::sync_service_environment::capture(),
+    );
     let target = format!("{}/{}", domain(), label(config, state));
     if std::fs::read(&path).ok().as_deref() == Some(contents.as_bytes())
         && launch(&["print", &target]).is_ok()
@@ -117,11 +133,13 @@ mod tests {
             Path::new("/private/config/herdr"),
             Path::new("/private/state/herdr"),
             "local.123",
+            &[("SSH_AUTH_SOCK".into(), "/tmp/a&b $sock".into())],
         );
         assert!(text.contains("/Users/a&amp;b/.local/bin/herdr"));
         assert!(text.contains("<string>sync</string><string>serve</string>"));
         assert!(text.contains("<string>/private/state</string>"));
         assert!(!text.contains("/bin/sh"));
         assert!(text.contains("<key>RunAtLoad</key><true/>"));
+        assert!(text.contains("<key>SSH_AUTH_SOCK</key><string>/tmp/a&amp;b $sock</string>"));
     }
 }

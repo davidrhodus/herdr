@@ -85,6 +85,8 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
         require_surface_interest,
     )?;
 
+    crate::client::endpoint::catalog_sync::remember_authenticated_target(&remote.target);
+
     let _bridge = SshStdioBridge::start(
         remote.target.clone(),
         prepared_remote.remote_herdr,

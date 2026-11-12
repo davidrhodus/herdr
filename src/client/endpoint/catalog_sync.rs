@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{EndpointCatalog, ProfileId, SavedSshEndpoint};
 mod automatic;
+mod receipts;
 pub(crate) use automatic::enable as enable_automatic;
+pub(crate) use automatic::remember_authenticated_target;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -464,6 +466,9 @@ pub(crate) fn configure(source: Source) -> Result<(), String> {
 }
 
 fn host_exchange(root: &Path, incoming: &Document) -> Result<Document, String> {
+    host_exchange_tagged(root, incoming).map(|(_, document)| document)
+}
+fn host_exchange_tagged(root: &Path, incoming: &Document) -> Result<(String, Document), String> {
     incoming.validate()?;
     let _guard = lock(root)?;
     let Some(mut state) = load(root)? else {
@@ -478,7 +483,7 @@ fn host_exchange(root: &Path, incoming: &Document) -> Result<Document, String> {
     state.stage(&EndpointCatalog::load_from_path(&root.join("endpoints.json"))?.ssh)?;
     let merged = state.document.merge(incoming)?;
     publish(root, &mut state, merged.clone())?;
-    Ok(merged)
+    Ok((state.device, merged))
 }
 
 // Direct transport holds its pairing lock before entering these catalog transactions.
@@ -596,8 +601,31 @@ pub(crate) fn exchange_stdio() -> Result<(), String> {
     }
     let incoming: Document =
         serde_json::from_slice(&bytes).map_err(|_| "invalid catalog sync request")?;
-    let result = host_exchange(&directory(), &incoming)?;
-    serde_json::to_writer(std::io::stdout().lock(), &result).map_err(|e| e.to_string())
+    let connection = std::env::var("SSH_CONNECTION").ok();
+    reply_exchange(
+        &directory(),
+        &incoming,
+        connection.as_deref(),
+        &mut std::io::stdout().lock(),
+    )
+}
+
+fn reply_exchange(
+    root: &Path,
+    incoming: &Document,
+    connection: Option<&str>,
+    output: &mut impl std::io::Write,
+) -> Result<(), String> {
+    let (registry, result) = host_exchange_tagged(root, incoming)?;
+    serde_json::to_writer(&mut *output, &result).map_err(|e| e.to_string())?;
+    output.flush().map_err(|e| e.to_string())?;
+    // Diagnostics must never turn a completed exchange into a failed request.
+    if let Some(connection) = connection {
+        if let Err(error) = receipts::record(root, &registry, connection, incoming, &result) {
+            tracing::warn!(%error, "Could not record shared-list manager exchange");
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn status() -> Result<serde_json::Value, String> {
@@ -610,7 +638,14 @@ pub(crate) fn status() -> Result<serde_json::Value, String> {
     };
     if let Some(state) = load(&directory())? {
         if state.source == Source::Local {
-            value["registry_id"] = serde_json::Value::String(state.device);
+            value["registry_id"] = serde_json::Value::String(state.device.clone());
+            let catalog = EndpointCatalog::load_from_path(&directory().join("endpoints.json"))?;
+            value["managers"] = receipts::status(
+                &directory(),
+                &state.device,
+                &state.document,
+                state.baseline == catalog.ssh,
+            );
         }
     }
     value["automatic"] = serde_json::Value::Bool(!automatic::disabled(&directory()));

@@ -20,8 +20,18 @@ fn quote(value: &str) -> String {
             .replace('\n', "\\n")
     )
 }
-fn spec(exe: &Path, config: &Path, state: &Path, version: &str) -> String {
-    format!("[Unit]\nDescription=Herdr server-list sync\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart=:{} sync serve\nRestart=always\nRestartSec=15\nEnvironment={}\nEnvironment={}\nEnvironment={}\nEnvironment=HERDR_SYNC_SERVICE=1\n\n[Install]\nWantedBy=default.target\n",quote(&exe.to_string_lossy()),quote(&format!("XDG_CONFIG_HOME={}",config.parent().unwrap_or(config).display())),quote(&format!("XDG_STATE_HOME={}",state.parent().unwrap_or(state).display())),quote(&format!("HERDR_SYNC_BUILD={version}")))
+fn spec(
+    exe: &Path,
+    config: &Path,
+    state: &Path,
+    version: &str,
+    environment: &[(String, String)],
+) -> String {
+    let environment: String = environment
+        .iter()
+        .map(|(key, value)| format!("Environment={}\n", quote(&format!("{key}={value}"))))
+        .collect();
+    format!("[Unit]\nDescription=Herdr server-list sync\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart=:{} sync serve\nRestart=always\nRestartSec=15\nEnvironment={}\nEnvironment={}\nEnvironment={}\nEnvironment=HERDR_SYNC_SERVICE=1\n{environment}\n[Install]\nWantedBy=default.target\n",quote(&exe.to_string_lossy()),quote(&format!("XDG_CONFIG_HOME={}",config.parent().unwrap_or(config).display())),quote(&format!("XDG_STATE_HOME={}",state.parent().unwrap_or(state).display())),quote(&format!("HERDR_SYNC_BUILD={version}")))
 }
 fn systemctl(args: &[&str]) -> io::Result<()> {
     let result = Command::new("systemctl")
@@ -43,7 +53,13 @@ pub(crate) fn install(exe: &Path, config: &Path, state: &Path, version: &str) ->
     std::fs::create_dir_all(&directory)?;
     let unit = unit(config, state);
     let path = directory.join(&unit);
-    let contents = spec(exe, config, state, version);
+    let contents = spec(
+        exe,
+        config,
+        state,
+        version,
+        &super::sync_service_environment::capture(),
+    );
     let changed = std::fs::read(&path).ok().as_deref() != Some(contents.as_bytes());
     if changed {
         let temp = path.with_extension(format!("{}.tmp", std::process::id()));
@@ -74,9 +90,11 @@ mod tests {
             Path::new("/cfg/herdr"),
             Path::new("/state/herdr"),
             "local",
+            &[("SSH_AUTH_SOCK".into(), "/tmp/agent $sock%1".into())],
         );
         assert!(text.contains("ExecStart=:\"/home/a b/herdr%%test\" sync serve"));
         assert!(!text.contains("/bin/sh"));
         assert!(text.contains("XDG_STATE_HOME=/state"));
+        assert!(text.contains("Environment=\"SSH_AUTH_SOCK=/tmp/agent $sock%%1\""));
     }
 }

@@ -24,12 +24,14 @@ fn installed_executable() -> io::Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::other("HOME is unavailable"))?;
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR"))?;
+    let canonical_home = std::fs::canonicalize(&home)?;
+    let executable = std::fs::canonicalize(executable)?;
     let ordinary_namespace = crate::config::config_dir() == home.join(".config/herdr")
         && crate::config::state_dir() == home.join(".local/state/herdr");
     if !cfg!(test)
         && !cfg!(debug_assertions)
-        && cargo_release_layout(&executable, manifest, &home, ordinary_namespace)
+        && cargo_release_layout(&executable, &manifest, &canonical_home, ordinary_namespace)
     {
         let stable = home.join(".local/libexec/herdr-sync-agent");
         install_cargo_binary(&executable, &stable)?;

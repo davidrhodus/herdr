@@ -167,7 +167,10 @@ The neutral APIs are `terminal.sessions.list` and `terminal.sessions.import`;
 
 Enable a shared list once on an SSH account you control, for example
 `herdr sync host` on Redie. Updated managers discover that account's opted-in
-registry through their saved SSH connection and join automatically. Simply
+registry through their saved SSH connection and join automatically. Successful
+`--remote` connections also qualify, even before that host has a saved profile.
+This works in direct remote and non-shell client modes as well as the normal
+manager UI; the current terminal surface stays selected. Simply
 installing Herdr on an arbitrary server does not enable sharing. Both computers
 must use the same hosting account. Different SSH aliases for that account are
 recognized as one registry; if several distinct registries are available, choose
@@ -180,6 +183,11 @@ When developing from `~/herdr`, `cargo run --release` copies the release executa
 to a stable `~/.local/libexec/herdr-sync-agent` path for the background service,
 preserving one previous background executable. Debug builds and isolated test namespaces do not install
 login services.
+The service keeps the launching terminal's `PATH` and `SSH_AUTH_SOCK`, so an
+existing SSH agent can authenticate background connections. These settings are
+refreshed when the UI opens again. A session-scoped agent socket must remain
+available; a dedicated Herdr key or SSH config agent is preferable across logins.
+No SSH listener or incoming connection to either manager is required.
 Server additions, renames, and removals sync about every 15 seconds even after
 the TUI closes. Sleep, logout, or lost network access pauses exchanges; local
 changes remain available and sync resumes after reconnecting. Linux uses the
@@ -197,7 +205,9 @@ screen also shows whether background sync is running. Use
 **Stop sharing** / `herdr sync leave` preserves the local server list and disables
 automatic enrollment until `herdr sync auto` or another explicit setup action.
 Existing manual sources and approved direct pairings take precedence over
-automatic enrollment.
+automatic enrollment. An abandoned Direct pairing with no peers or active
+approval can recover through a discovered shared host; its offline edits and
+deletion history are retained.
 
 ## Pair managers directly over Tailscale
 
@@ -276,6 +286,16 @@ disabling, or removing a machine synchronizes automatically while a UI is open
 `herdr sync now` to force a round, and `herdr sync status` to see the configured
 host, last successful exchange, and any connection error. A failed initial join
 keeps the selected source configured so a later round can retry.
+
+The shared host automatically records recent SSH catalog exchanges. Its
+`herdr sync status --json` output includes `managers`, with each source IP,
+`last_exchange`, `recent`, and `in_sync`. A connection is `in_sync` only when
+it recently sent the same complete catalog the host currently holds; the first
+download alone does not establish this. Evidence expires after 60 seconds and
+becomes out of date when the catalog changes. These are connection diagnostics,
+not device identities: multiple managers behind one address share an entry.
+Checking the shared host does not require SSH access to either manager, and
+existing v1 clients contribute receipts without an update.
 
 The shared list includes machine IDs, labels, SSH targets, sessions, and enabled
 state. SSH credentials and configuration, UI selection, and local terminal
