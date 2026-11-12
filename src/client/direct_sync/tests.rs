@@ -801,3 +801,44 @@ fn direct_sync_live_network_parsing_pins_stable_ids_not_rotating_map_keys_or_non
     assert!(service::eligible(&net, "192.168.0.1".parse().unwrap()).is_none());
     assert!(service::eligible(&net, "100.64.0.2".parse().unwrap()).is_some());
 }
+
+#[test]
+fn automatic_shared_host_enrollment_respects_pairing_intent_but_not_unsolicited_requests() {
+    let a = Root::new();
+    let b = Root::new();
+    let am = manager(&a, "a", "100.64.0.1");
+    let bm = manager(&b, "b", "100.64.0.2");
+    let ticket = ticket_for(&b, &am.node);
+    let request = ticket.nonce.clone();
+    rpc(
+        &b,
+        net(&bm, &am),
+        node(&am),
+        wire::Request::Begin {
+            from: am.id.clone(),
+            request: request.clone(),
+            token: random(32).unwrap(),
+            ticket,
+        },
+    );
+    assert!(when_unpaired(&b.0, || Ok(true)).unwrap());
+    approve_at(&b.0, &request, true).unwrap();
+    assert!(!when_unpaired(&b.0, || panic!("accepted pairing must win")).unwrap());
+    store::transaction(&b.0, |s| {
+        s.incoming.clear();
+        s.outgoing = Some(store::Pending {
+            request: random(32)?,
+            manager: am.clone(),
+            token: random(32)?,
+            expires: now() + store::TTL,
+            accepted: None,
+            epoch: None,
+            confirmed: false,
+            ticket: ticket_for(&a, &bm.node),
+            promotion: random(16)?,
+        });
+        Ok(())
+    })
+    .unwrap();
+    assert!(!when_unpaired(&b.0, || panic!("outgoing pairing must win")).unwrap());
+}

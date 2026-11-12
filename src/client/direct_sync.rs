@@ -93,7 +93,33 @@ pub(super) fn start_worker(
     tx: tokio::sync::mpsc::Sender<super::ClientLoopEvent>,
     quit: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
-    service::start(tx, quit)
+    service::start(Some(tx), quit)
+}
+pub(crate) fn start_background(quit: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    service::start(None, quit)
+}
+pub(crate) fn worker_lease(root: &Path, name: &str) -> std::io::Result<std::fs::File> {
+    store::lock(root, name).map_err(std::io::Error::other)
+}
+pub(crate) fn when_unpaired(
+    root: &Path,
+    action: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    store::transaction(root, |state| {
+        if !state.peers.is_empty()
+            || state
+                .outgoing
+                .as_ref()
+                .is_some_and(|p| p.expires > now() || p.confirmed)
+            || state
+                .incoming
+                .iter()
+                .any(|p| p.expires > now() && p.accepted == Some(true))
+        {
+            return Ok(false);
+        }
+        action()
+    })
 }
 fn view_at(root: &Path, listening: bool) -> Result<View, String> {
     store::transaction(root, |state| {

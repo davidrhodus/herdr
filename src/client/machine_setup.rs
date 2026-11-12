@@ -466,7 +466,10 @@ impl Drop for SetupFiles {
     }
 }
 fn sync_status() -> String {
-    match crate::client::endpoint::catalog_sync::status() {
+    let summary = match crate::client::endpoint::catalog_sync::status() {
+        Ok(value) if value["enabled"] == false && value["automatic"] == true => {
+            "Automatic sync: waiting for an enabled shared-list host".into()
+        }
         Ok(value) if value["enabled"] == false => "Server-list sync is off".into(),
         Ok(value) if value["source"]["kind"] == "direct" => {
             "Direct manager sync is enabled over Tailscale".into()
@@ -498,7 +501,13 @@ fn sync_status() -> String {
             format!("Shared list from {target}\n{success}{error}")
         }
         Err(_) => "Shared-list status is unavailable".into(),
-    }
+    };
+    let background = if super::sync_background::status()["running"] == true {
+        "Background sync is running; the TUI can be closed"
+    } else {
+        "Sync is active while this TUI is open"
+    };
+    format!("{summary}\n{background}")
 }
 struct OwnedChild {
     child: Box<dyn portable_pty::Child + Send + Sync>,

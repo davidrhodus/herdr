@@ -576,6 +576,18 @@ pub(crate) use client_state::{
     create_private_state_file, replace_file, sync_parent_directory, validate_private_key_path,
 };
 
+#[cfg(target_os = "macos")]
+#[path = "macos/sync_service.rs"]
+pub(crate) mod sync_service;
+#[cfg(target_os = "linux")]
+#[path = "linux/sync_service.rs"]
+pub(crate) mod sync_service;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[path = "sync_service_unsupported.rs"]
+pub(crate) mod sync_service;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod sync_service_identity;
+
 #[cfg(not(unix))]
 pub(crate) fn begin_cli_output() {}
 

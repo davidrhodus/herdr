@@ -163,11 +163,48 @@ administrator/tracing policy. Other operating systems show an unsupported messag
 The neutral APIs are `terminal.sessions.list` and `terminal.sessions.import`;
 `herdr --machine <server> terminal-import list` exposes discovery from the CLI.
 
+## Automatic background server-list sync
+
+Enable a shared list once on an SSH account you control, for example
+`herdr sync host` on Redie. Updated managers discover that account's opted-in
+registry through their saved SSH connection and join automatically. Simply
+installing Herdr on an arbitrary server does not enable sharing. Both computers
+must use the same hosting account. Different SSH aliases for that account are
+recognized as one registry; if several distinct registries are available, choose
+one in **Servers → Server-list sync**.
+
+On macOS and Linux with a user service manager, the installed
+`~/.local/bin/herdr` starts a per-user background service when the TUI opens.
+You can also run `herdr sync auto` to enable automatic enrollment and start it.
+When developing from `~/herdr`, `cargo run --release` copies the release executable
+to a stable `~/.local/libexec/herdr-sync-agent` path for the background service,
+preserving one previous background executable. Debug builds and isolated test namespaces do not install
+login services.
+Server additions, renames, and removals sync about every 15 seconds even after
+the TUI closes. Sleep, logout, or lost network access pauses exchanges; local
+changes remain available and sync resumes after reconnecting. Linux uses the
+existing user-login/linger policy and does not change it.
+
+Private SSH keys remain on each computer. Background connections never ask for
+passwords or accept changed host keys. Authenticate a server in the TUI once
+and use automatic key setup for unattended access. Existing terminal sessions
+are independent of syncing and service restarts.
+
+`herdr sync status --json` shows the selected source, last success or error,
+registry identity when hosting, and background-service heartbeat. The sync
+screen also shows whether background sync is running. Use
+`herdr sync background start|stop|status` to manage the login service.
+**Stop sharing** / `herdr sync leave` preserves the local server list and disables
+automatic enrollment until `herdr sync auto` or another explicit setup action.
+Existing manual sources and approved direct pairings take precedence over
+automatic enrollment.
+
 ## Pair managers directly over Tailscale
 
 Your desktop and laptop can share the server list directly, without choosing a
 shared host or enabling SSH between the managers. Both computers need this
-Herdr build, connected Tailscale, and an open Herdr UI.
+Herdr build and connected Tailscale. Keep both UIs open for initial approval;
+the background sync service can maintain the pairing afterward.
 
 1. On either computer, open **Servers → Server-list sync → Pair another manager over Tailscale**.
 2. Choose **Find / refresh running managers**, select the other computer, and confirm the pairing request.
@@ -181,7 +218,7 @@ windows under the same OS user share one identity and the same pairings.
 
 Paired managers reconnect using stable Tailscale device identities, including
 after an IP or hostname changes. Additions, renames, enabled state, and removals
-sync every 15 seconds while the managers are running. Offline changes remain
+sync every 15 seconds while a manager UI or its background service is running. Offline changes remain
 local until the other manager is available. **Sync paired managers now** forces
 a round. **Forget** revokes a pairing; **Stop direct manager sync** forgets all
 direct pairings on this computer. Neither action deletes your server list or

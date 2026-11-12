@@ -352,6 +352,25 @@ fn required(name: &'static str, value_name: &'static str) -> Arg {
 fn sync_command() -> Command {
     Command::new("sync")
         .subcommand(
+            Command::new("auto").about(
+                "Automatically join an opted-in shared server list and start background sync",
+            ),
+        )
+        .subcommand(
+            Command::new("background")
+                .about("Manage background server-list sync")
+                .subcommand(Command::new("start").about("Install and start background sync"))
+                .subcommand(
+                    Command::new("stop").about("Stop background sync until explicitly enabled"),
+                )
+                .subcommand(Command::new("status").about("Show background sync heartbeat")),
+        )
+        .subcommand(
+            Command::new("serve")
+                .about("Run the background sync worker")
+                .hide(true),
+        )
+        .subcommand(
             Command::new("check-v1")
                 .about("Check shared catalog transport support")
                 .hide(true),

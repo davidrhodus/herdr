@@ -9,12 +9,13 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-type Context = Arc<Mutex<Result<Network, String>>>;
+type Context = Arc<Mutex<(Instant, Result<Network, String>)>>;
 fn network(context: &Context) -> Result<Network, String> {
-    context
-        .lock()
-        .map_err(|_| "Manager discovery stopped")?
-        .clone()
+    let snapshot = context.lock().map_err(|_| "Manager discovery stopped")?;
+    if snapshot.0.elapsed() > Duration::from_secs(20) {
+        return Err("Tailscale status is stale; waiting to refresh".into());
+    }
+    snapshot.1.clone()
 }
 fn set_error(root: &Path, error: String) {
     let _ = store::transaction(root, |s| {
@@ -334,7 +335,10 @@ impl Owner {
             _lease: lease,
             listeners: vec![],
             addresses: vec![],
-            context: Arc::new(Mutex::new(Err("Checking Tailscale…".into()))),
+            context: Arc::new(Mutex::new((
+                Instant::now(),
+                Err("Checking Tailscale…".into()),
+            ))),
             jobs: vec![],
             net_due: Instant::now(),
             sync_due: Instant::now(),
@@ -380,7 +384,7 @@ impl Owner {
                     Ok(net)
                 });
                 if let Ok(mut current) = ctx.lock() {
-                    *current = result;
+                    *current = (Instant::now(), result);
                 }
                 busy.store(false, Ordering::Release);
                 Ok(())
@@ -444,8 +448,8 @@ impl Owner {
                 drop(stream);
                 continue;
             }
-            self.spawn(root, move |root, _, _| {
-                let net = super::super::machine_setup::tailscale::network()?;
+            self.spawn(root, move |root, context, _| {
+                let net = network(context)?;
                 let source = eligible(&net, address.ip())
                     .ok_or("Connection is not from a visible Tailscale device")?;
                 let _ = wire::handle(
@@ -592,15 +596,24 @@ impl Drop for Owner {
     }
 }
 pub(super) fn start(
-    tx: tokio::sync::mpsc::Sender<super::super::ClientLoopEvent>,
+    tx: Option<tokio::sync::mpsc::Sender<super::super::ClientLoopEvent>>,
     quit: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
         let root = store::root();
         let mut owner: Option<Owner> = None;
         let mut previous = None;
+        let mut resident = false;
+        let mut resident_due = Instant::now();
         while !quit.load(Ordering::Acquire) {
-            if owner.is_none() {
+            if tx.is_some() && Instant::now() >= resident_due {
+                resident_due = Instant::now() + Duration::from_secs(5);
+                resident = super::super::sync_background::status()["running"] == true;
+                if resident {
+                    owner = None;
+                }
+            }
+            if owner.is_none() && !resident {
                 if let Ok(lease) = store::lock(&root, "direct-sync-owner.lock") {
                     if lease.try_lock().is_ok() {
                         let _ = store::transaction(&root, |s| {
@@ -636,15 +649,21 @@ pub(super) fn start(
                         let _ = store::write(&root, "direct-sync-view.json", &view);
                     }
                     previous = Some(view.clone());
-                    if tx
-                        .blocking_send(super::super::ClientLoopEvent::DirectSync(view))
-                        .is_err()
-                    {
-                        break;
+                    if let Some(tx) = &tx {
+                        if tx
+                            .blocking_send(super::super::ClientLoopEvent::DirectSync(view))
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
             }
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(if owner.is_some() {
+                200
+            } else {
+                1000
+            }));
         }
     });
 }

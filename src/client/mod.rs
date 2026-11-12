@@ -37,6 +37,7 @@ mod shell;
 mod shell_runtime;
 mod startup;
 mod state;
+pub(crate) mod sync_background;
 mod terminal_geometry;
 mod terminal_sessions;
 mod terminal_setup;

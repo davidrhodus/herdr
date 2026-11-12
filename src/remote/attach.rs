@@ -1,10 +1,9 @@
 //! Remote thin-client launcher over SSH command stdio.
 
-#[cfg(unix)]
 use super::process::wait_with_output_limit;
 use super::{
     args::*,
-    process::{wait_with_output_timeout, CancellablePipe, OwnedSshChild, PipeControl},
+    process::{CancellablePipe, OwnedSshChild, PipeControl},
     restart_policy::*,
     shell_quote,
 };
@@ -35,7 +34,6 @@ const REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(unix)]
 const SSH_CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(unix)]
 // Diagnostic commands may print remote-controlled banners; drain them with a
 // fixed memory budget. An oversized local configuration is never parsed.
 const SSH_DIAGNOSTIC_OUTPUT_LIMIT: usize = 256 * 1024;
@@ -923,6 +921,20 @@ pub(super) struct RemoteSsh {
     pub(super) cancelled: Arc<AtomicBool>,
 }
 
+fn background_control_path(path: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    // Replace (rather than extend) the basename: OpenSSH also needs room for
+    // its 17-byte temporary socket suffix during ControlMaster startup.
+    let scope = format!(
+        "{:?}\0{:?}\0{:?}",
+        crate::config::config_dir(),
+        crate::config::state_dir(),
+        path
+    );
+    let identity = format!("{:x}", Sha256::digest(scope.as_bytes()));
+    path.with_file_name(format!("b-{}-%C", &identity[..20]))
+}
+
 impl RemoteSsh {
     fn new(target: String, manage_ssh_config: bool, session_name: String) -> Self {
         let managed_config = if manage_ssh_config {
@@ -953,6 +965,13 @@ impl RemoteSsh {
                 .remote
                 .manage_ssh_config;
         let mut ssh = Self::new(target, manage, crate::session::DEFAULT_SESSION_NAME.into());
+        if std::env::var_os("HERDR_SYNC_SERVICE").is_some() {
+            if let Some(config) = ssh.managed_config.as_mut() {
+                if let Some(path) = config.options.control_path.as_mut() {
+                    *path = background_control_path(path);
+                }
+            }
+        }
         ssh.noninteractive = true;
         ssh
     }
@@ -1122,6 +1141,16 @@ impl RemoteSsh {
 
     fn base_command(&self) -> Command {
         let mut command = Command::new("ssh");
+        if std::env::var_os("HERDR_SYNC_SERVICE").is_some() && self.options().is_none() {
+            command.args([
+                "-o",
+                "ControlPath=none",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPersist=no",
+            ]);
+        }
         apply_managed_ssh_options(&mut command, self.options());
         if let Some(path) = &self.identity_file {
             command.arg("-i").arg(path);
@@ -1158,13 +1187,18 @@ impl RemoteSsh {
             )?);
         }
 
-        let output = wait_with_output_timeout(
+        let output = super::process::wait_with_input_output_limit(
             child,
-            Some(script.into_bytes()),
+            script.into_bytes(),
             NONINTERACTIVE_SSH_COMMAND_TIMEOUT,
             Arc::clone(&self.cancelled),
+            SSH_DIAGNOSTIC_OUTPUT_LIMIT,
         )?;
-        normalize_remote_output(output)
+        if self.noninteractive {
+            normalize_metadata_output(output)
+        } else {
+            normalize_remote_output(output)
+        }
     }
 
     fn framed_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
@@ -1180,16 +1214,20 @@ impl RemoteSsh {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let output = if self.noninteractive {
-            wait_with_output_timeout(
+            wait_with_output_limit(
                 command.spawn()?,
-                None,
                 NONINTERACTIVE_SSH_COMMAND_TIMEOUT,
                 Arc::clone(&self.cancelled),
+                SSH_DIAGNOSTIC_OUTPUT_LIMIT,
             )
         } else {
             output_with_forwarded_stderr(command.spawn()?, None)
         }?;
-        normalize_remote_output(output)
+        if self.noninteractive {
+            normalize_metadata_output(output)
+        } else {
+            normalize_remote_output(output)
+        }
     }
 
     fn posix_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
@@ -1378,6 +1416,18 @@ fn output_with_forwarded_stderr(mut child: Child, stdin: Option<&[u8]>) -> io::R
     write_result?;
     output.stderr = stderr_result?;
     Ok(output)
+}
+
+fn normalize_metadata_output(output: Output) -> io::Result<Output> {
+    if output.stdout.len() > SSH_DIAGNOSTIC_OUTPUT_LIMIT
+        || output.stderr.len() > SSH_DIAGNOSTIC_OUTPUT_LIMIT
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SSH metadata exceeds its capture limit",
+        ));
+    }
+    normalize_remote_output(output)
 }
 
 fn normalize_remote_output(mut output: Output) -> io::Result<Output> {
@@ -3979,6 +4029,33 @@ pub(crate) fn exchange_catalog(
     Ok(document)
 }
 
+/// Read-only discovery: only accounts already hosting a shared catalog qualify.
+/// Authentication remains noninteractive and uses the saved device-local key.
+pub(crate) fn catalog_host_identity(target: &str) -> io::Result<Option<String>> {
+    super::validate_remote_target(target).map_err(io::Error::other)?;
+    let ssh = RemoteSsh::new_noninteractive(target.to_owned());
+    let remote = find_installed_remote_herdr(&ssh)?;
+    let output = ssh.shell_output(
+        &remote.platform,
+        &remote.executable.command(&["sync", "status", "--json"]),
+    )?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(io::Error::other)?;
+    Ok(
+        (value["enabled"] == true && value["source"]["kind"] == "local")
+            .then(|| {
+                value["registry_id"]
+                    .as_str()
+                    .filter(|id| herdr_sync::valid_id(id))
+                    .map(str::to_owned)
+            })
+            .flatten(),
+    )
+}
+
 pub(crate) fn prepare_catalog_host(target: &str) -> io::Result<()> {
     crate::client::endpoint::SavedSshEndpoint::new("Shared list", target, "default")
         .map_err(io::Error::other)?;
@@ -4040,6 +4117,40 @@ fn catalog_sync_command(executable: &RemoteExecutable) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn background_transports_never_reuse_a_ui_control_socket() {
+        let ui = Path::new("/tmp/hssh-501/012345678901234567890123-%C");
+        let background = background_control_path(ui);
+        assert_ne!(ui, background);
+        assert_eq!(ui.parent(), background.parent());
+        assert!(background
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("b-"));
+        let expanded = background.to_string_lossy().replace("%C", &"c".repeat(40));
+        assert!(expanded.len() < 104);
+        assert!(format!("{expanded}.QuuYe7ZFE2HYeAE4").len() < 104);
+    }
+    #[test]
+    fn metadata_probes_reject_floods_on_either_pipe_before_json_or_frame_parsing() {
+        for stdout in [false, true] {
+            let mut output = Output {
+                status: std::process::ExitStatus::default(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            };
+            if stdout {
+                output.stdout = vec![b'x'; SSH_DIAGNOSTIC_OUTPUT_LIMIT + 1]
+            } else {
+                output.stderr = vec![b'x'; SSH_DIAGNOSTIC_OUTPUT_LIMIT + 1]
+            }
+            assert_eq!(
+                normalize_metadata_output(output).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
     #[test]
     fn catalog_sync_uses_framed_streaming_commands_on_both_host_platforms() {
         let posix = catalog_sync_command(&RemoteExecutable::PosixShellPath(

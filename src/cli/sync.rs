@@ -2,6 +2,29 @@ use crate::client::endpoint::catalog_sync::{self, Source};
 
 pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
     let result = match args {
+        [command] if command == "serve" => {
+            crate::client::sync_background::serve()?;
+            return Ok(0);
+        }
+        [command] if command == "auto" => {
+            catalog_sync::enable_automatic().map_err(std::io::Error::other)?;
+            crate::client::sync_background::start()?;
+            return Ok(0);
+        }
+        [command, action] if command == "background" => {
+            match action.as_str() {
+                "start" => crate::client::sync_background::start()?,
+                "stop" => crate::client::sync_background::stop()?,
+                "status" => {}
+                _ => {
+                    return Err(std::io::Error::other(
+                        "usage: herdr sync background <start|stop|status>",
+                    ))
+                }
+            }
+            println!("{}", crate::client::sync_background::status());
+            return Ok(0);
+        }
         [command] if command == "check-v1" => {
             println!("herdr-catalog-sync-v1");
             return Ok(0);
@@ -44,11 +67,11 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
                 .map_err(std::io::Error::other)
         }
         [command] if command == "status" => {
-            println!("{}", catalog_sync::status().map_err(std::io::Error::other)?);
+            println!("{}", status()?);
             return Ok(0);
         }
         [command, flag] if command == "status" && flag == "--json" => {
-            println!("{}", catalog_sync::status().map_err(std::io::Error::other)?);
+            println!("{}", status()?);
             return Ok(0);
         }
         _ => {
@@ -60,4 +83,10 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
     result.map_err(std::io::Error::other)?;
     println!("{}", catalog_sync::status().map_err(std::io::Error::other)?);
     Ok(0)
+}
+
+fn status() -> std::io::Result<serde_json::Value> {
+    let mut value = catalog_sync::status().map_err(std::io::Error::other)?;
+    value["background"] = crate::client::sync_background::status();
+    Ok(value)
 }

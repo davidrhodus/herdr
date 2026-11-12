@@ -14,6 +14,8 @@ use herdr_sync::{Document, Machine, Record, Stamp, MAX_BODY};
 use serde::{Deserialize, Serialize};
 
 use super::{EndpointCatalog, ProfileId, SavedSshEndpoint};
+mod automatic;
+pub(crate) use automatic::enable as enable_automatic;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -168,6 +170,9 @@ fn profiles(document: &Document) -> Result<Vec<SavedSshEndpoint>, String> {
 }
 impl SyncState {
     fn stage(&mut self, current: &[SavedSshEndpoint]) -> Result<(), String> {
+        if self.baseline == current {
+            return Ok(());
+        }
         let mut changes = Vec::new();
         for before in &self.baseline {
             if !current.iter().any(|p| p.id == before.id) {
@@ -291,8 +296,11 @@ fn sync_with(
         };
         recover(root, &mut state)?;
         let current = EndpointCatalog::load_from_path(&root.join("endpoints.json"))?;
+        let changed = state.baseline != current.ssh;
         state.stage(&current.ssh)?;
-        save(root, &state)?; // Durable outbox before attempting the network.
+        if changed {
+            save(root, &state)?;
+        } // Durable outbox before attempting the network.
         state
     };
     let reply = exchange(&snapshot.source, &snapshot.document);
@@ -310,20 +318,35 @@ fn sync_with(
         Ok(document) => {
             let merged = state.document.merge(&document)?;
             publish(root, &mut state, merged)?;
+            background_exchange(root, &state.source, None);
             Ok(true)
         }
         Err(error) => {
             let error: String = error.chars().take(2048).collect();
             state.last_error = Some(error.clone());
             save(root, &state)?;
+            background_exchange(root, &state.source, Some(&error));
             Err(error)
         }
     }
 }
 
+fn background_exchange(root: &Path, source: &Source, error: Option<&str>) {
+    if std::env::var_os("HERDR_SYNC_SERVICE").is_none() || !matches!(source, Source::Ssh { .. }) {
+        return;
+    }
+    let value = serde_json::json!({"pid":std::process::id(),"at":SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),"ok":error.is_none(),"error":error,"source":source});
+    let _ = super::store_private_json(
+        &root.join("catalog-network-status.json"),
+        &serde_json::to_vec(&value).unwrap_or_default(),
+        "background network status",
+    );
+}
+
 fn publish(root: &Path, state: &mut SyncState, merged: Document) -> Result<(), String> {
     let incoming = profiles(&merged)?;
     let mut catalog = EndpointCatalog::load_from_path(&root.join("endpoints.json"))?;
+    let changed = catalog.ssh != incoming;
     catalog.ssh = incoming.clone();
     if catalog
         .selected_profile
@@ -341,7 +364,7 @@ fn publish(root: &Path, state: &mut SyncState, merged: Document) -> Result<(), S
         return Err("synced catalog exceeds local storage limit".into());
     }
     state.baseline = incoming.clone();
-    state.pending_projection = Some(incoming);
+    state.pending_projection = changed.then_some(incoming);
     state.document = merged;
     state.last_success = Some(
         SystemTime::now()
@@ -351,14 +374,41 @@ fn publish(root: &Path, state: &mut SyncState, merged: Document) -> Result<(), S
     );
     state.last_error = None;
     save(root, state)?;
-    recover(root, state)
+    if changed {
+        recover(root, state)
+    } else {
+        Ok(())
+    }
 }
 
 pub(crate) fn start_worker(quit: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let mut previous_error = None;
+        let mut lease = None;
+        let mut automatic_due = std::time::Instant::now();
         while !quit.load(Ordering::Acquire) {
-            if state_path(&directory()).exists() {
+            let root = directory();
+            let resident = std::env::var_os("HERDR_SYNC_SERVICE").is_none()
+                && crate::client::sync_background::status()["running"] == true;
+            if resident {
+                lease = None;
+            }
+            if lease.is_none() && !resident {
+                if let Ok(file) =
+                    crate::client::direct_sync::worker_lease(&root, "catalog-sync-owner.lock")
+                {
+                    if file.try_lock().is_ok() {
+                        lease = Some(file);
+                    }
+                }
+            }
+            if lease.is_some() && std::time::Instant::now() >= automatic_due {
+                automatic_due = std::time::Instant::now() + Duration::from_secs(60);
+                if let Err(error) = automatic::enroll(&root) {
+                    tracing::warn!(%error, "automatic server-list discovery paused");
+                }
+            }
+            if lease.is_some() && state_path(&root).exists() {
                 match sync_once() {
                     Err(error) => {
                         if previous_error.as_ref() != Some(&error) {
@@ -405,6 +455,7 @@ pub(crate) fn configure(source: Source) -> Result<(), String> {
                 last_error: None,
             },
         };
+        automatic::set_disabled(&root, false)?;
         state.stage(&EndpointCatalog::load_from_path(&root.join("endpoints.json"))?.ssh)?;
         save(&root, &state)?;
     }
@@ -487,6 +538,7 @@ pub(crate) fn enable_direct_when(
         },
     };
     state.stage(&EndpointCatalog::load_from_path(&root.join("endpoints.json"))?.ssh)?;
+    automatic::set_disabled(root, false)?;
     save(root, &state)?;
     Ok(state.device)
 }
@@ -521,6 +573,7 @@ pub(crate) fn direct_merge_at(
 
 pub(crate) fn leave_direct_at(root: &Path) -> Result<(), String> {
     let _guard = lock(root)?;
+    automatic::set_disabled(root, true)?;
     if let Some(mut state) = load(root)? {
         if state.source == Source::Direct {
             recover(root, &mut state)?;
@@ -549,18 +602,26 @@ pub(crate) fn exchange_stdio() -> Result<(), String> {
 
 pub(crate) fn status() -> Result<serde_json::Value, String> {
     let _guard = lock(&directory())?;
-    Ok(match load(&directory())? {
+    let mut value = match load(&directory())? {
         None => serde_json::json!({"enabled": false}),
         Some(state) => {
             serde_json::json!({"enabled": true, "source": state.source, "last_success": state.last_success, "last_error": state.last_error, "machines": state.document.machines().count()})
         }
-    })
+    };
+    if let Some(state) = load(&directory())? {
+        if state.source == Source::Local {
+            value["registry_id"] = serde_json::Value::String(state.device);
+        }
+    }
+    value["automatic"] = serde_json::Value::Bool(!automatic::disabled(&directory()));
+    Ok(value)
 }
 pub(crate) fn leave() -> Result<(), String> {
     leave_at(&directory())
 }
 pub(crate) fn leave_at(root: &Path) -> Result<(), String> {
     let _guard = lock(root)?;
+    automatic::set_disabled(root, true)?;
     match load(root) {
         Ok(Some(mut state)) => recover(root, &mut state)?,
         Ok(None) => {}
@@ -577,9 +638,9 @@ pub(crate) fn leave_at(root: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    struct Temp(PathBuf);
+    pub(super) struct Temp(pub(super) PathBuf);
     impl Temp {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let path =
                 std::env::temp_dir().join(format!("herdr-catalog-sync-{}", ProfileId::generate()));
             std::fs::create_dir_all(&path).unwrap();
@@ -657,6 +718,37 @@ mod tests {
         peer.join('a');
         assert!(host_exchange(&peer.0, &Document::default()).is_err());
         assert_eq!(peer.catalog().ssh.len(), 1);
+    }
+    #[test]
+    fn lost_initial_reply_cannot_discard_an_offline_rename_of_an_identical_profile() {
+        let desktop = Temp::new();
+        let laptop = Temp::new();
+        add(&desktop, "Redie");
+        add(&laptop, "Redie");
+        desktop.join('a');
+        laptop.join('b');
+        let server = Mutex::new(Document::default());
+        round(&desktop, &server);
+        assert!(sync_with(&laptop.0, |_, document| {
+            let mut hosted = server.lock().unwrap();
+            *hosted = hosted.merge(document)?;
+            Err("reply lost".into())
+        })
+        .is_err());
+        let mut catalog = laptop.catalog();
+        catalog.ssh[0].label = "Production".into();
+        catalog
+            .store_to_path(&laptop.0.join("endpoints.json"))
+            .unwrap();
+        round(&laptop, &server);
+        round(&desktop, &server);
+        assert_eq!(desktop.catalog().ssh, laptop.catalog().ssh);
+        assert_eq!(desktop.catalog().ssh.len(), 2);
+        assert!(desktop
+            .catalog()
+            .ssh
+            .iter()
+            .any(|p| p.label == "Production"));
     }
     #[test]
     fn two_devices_join_with_existing_profiles_and_sync_offline_adds_renames_and_deletes() {
