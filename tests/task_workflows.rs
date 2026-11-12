@@ -38,6 +38,9 @@ fn fake_server(args: &[&str], responses: Vec<Value>) -> (std::process::Output, V
                 }
                 Err(error) => panic!("accept: {error}"),
             };
+            // macOS can inherit the listener's nonblocking mode on accepted
+            // sockets; the fixture must wait for the CLI's request bytes.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();

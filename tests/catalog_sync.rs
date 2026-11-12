@@ -10,18 +10,52 @@ use serde_json::{json, Value};
 
 // Use the real Herdr executable for discovery and exchange, with SSH's command
 // transport replaced by a local shell and a separate peer state directory.
-const SSH: &str = r#"#!/bin/sh
-for arg do last=$arg; printf '%s\n' "$arg" >> "$HERDR_TEST_ROOT/ssh-args"; done
-if [ "$HERDR_TEST_OFFLINE" = yes ]; then echo 'peer offline' >&2; exit 255; fi
-export XDG_STATE_HOME="$HERDR_TEST_PEER_STATE"
-export XDG_CONFIG_HOME="$HERDR_TEST_PEER_CONFIG"
-PATH="$HERDR_TEST_REMOTE_BIN:/usr/bin:/bin"; export PATH
-printf 'login banner\n'
-if [ "$last" = '/bin/sh -s' ]; then
-    script=$(cat)
-    exec /bin/sh -c "$script"
-fi
-exec /bin/sh -c "$last"
+const SSH: &str = r#"#!/usr/bin/env python3
+import os, pathlib, subprocess, sys
+args = sys.argv[1:]
+root = pathlib.Path(os.environ["HERDR_TEST_ROOT"])
+with (root / "ssh-args").open("a") as log:
+    for arg in args:
+        print(arg, file=log)
+if os.environ.get("HERDR_TEST_OFFLINE") == "yes":
+    print("peer offline", file=sys.stderr)
+    sys.exit(255)
+if "-G" in args:
+    print("hostname localhost\nuser you\nport 22")
+    sys.exit(0)
+last = args[-1]
+os.environ["XDG_STATE_HOME"] = os.environ["HERDR_TEST_PEER_STATE"]
+os.environ["XDG_CONFIG_HOME"] = os.environ["HERDR_TEST_PEER_CONFIG"]
+os.environ["HOME"] = os.environ["HERDR_TEST_PEER_HOME"]
+os.environ["PATH"] = os.environ["HERDR_TEST_REMOTE_BIN"] + ":/usr/bin:/bin"
+print("login banner", flush=True)
+if last.startswith("herdr-sync-"):
+    if os.environ.get("HERDR_TEST_REVOKED") == "yes":
+        print("Permission denied (publickey).", file=sys.stderr)
+        sys.exit(255)
+    private = args[args.index("-i") + 1]
+    public = subprocess.check_output(["ssh-keygen", "-y", "-P", "", "-f", private], text=True).split()[1]
+    auth = pathlib.Path(os.environ["HOME"]) / ".ssh/authorized_keys"
+    entries = [line for line in auth.read_text().splitlines() if public in line.split()]
+    if len(entries) != 1 or not entries[0].startswith('restrict,command="'):
+        sys.exit(255)
+    # Match OpenSSH's authorized-key option decoding, then run the real Rust
+    # forced dispatcher. The real-sshd smoke test covers SSH authentication.
+    encoded = entries[0][len('restrict,command="'):]
+    command = ""
+    i = 0
+    while i < len(encoded):
+        if encoded[i] == '"':
+            break
+        if encoded[i] == "\\" and encoded[i + 1:i + 2] == '"':
+            i += 1
+        command += encoded[i]
+        i += 1
+    os.environ["SSH_ORIGINAL_COMMAND"] = last
+    os.execv("/bin/sh", ["sh", "-c", command])
+if last == "/bin/sh -s":
+    os.execv("/bin/sh", ["sh", "-s"])
+os.execv("/bin/sh", ["sh", "-c", last])
 "#;
 
 struct Harness {
@@ -36,6 +70,7 @@ impl Harness {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("peer-home")).unwrap();
         fs::create_dir_all(root.join("remote bin")).unwrap();
         fs::write(root.join("bin/ssh"), SSH).unwrap();
         fs::set_permissions(root.join("bin/ssh"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -77,6 +112,7 @@ impl Harness {
                 ),
             )
             .env("HERDR_TEST_ROOT", &self.root)
+            .env("HERDR_TEST_PEER_HOME", self.root.join("peer-home"))
             .env("HERDR_TEST_PEER_STATE", self.state("host"))
             .env("HERDR_TEST_PEER_CONFIG", self.root.join("host-config"))
             .env("HERDR_TEST_REMOTE_BIN", self.root.join("remote bin"))
@@ -201,4 +237,35 @@ fn choosing_a_saved_server_prepares_the_shared_host_without_manual_remote_comman
     harness.run("laptop", &["sync", "use", "you@desktop"]);
     assert_eq!(harness.profiles("host"), harness.profiles("laptop"));
     assert_eq!(harness.profiles("host").as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn revoked_active_sync_key_never_reenrolls_or_falls_back_to_login_commands() {
+    let harness = Harness::new();
+    harness.seed("host", &"a".repeat(32), "Host");
+    harness.run("host", &["sync", "host"]);
+    harness.run("laptop", &["sync", "join", "you@desktop"]);
+    let status = harness.run("laptop", &["sync", "status", "--json"]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&status.stdout).unwrap()["sync_key"]["enrolled"],
+        true
+    );
+    let authorized = harness.root.join("peer-home/.ssh/authorized_keys");
+    let before = fs::read(&authorized).unwrap();
+    fs::write(harness.root.join("ssh-args"), b"").unwrap();
+    let output = harness
+        .command("laptop")
+        .env("HERDR_TEST_REVOKED", "yes")
+        .args(["sync", "now"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Permission denied"));
+    let args = fs::read_to_string(harness.root.join("ssh-args")).unwrap();
+    assert!(args.contains("herdr-sync-exchange-v1"));
+    assert!(args.contains("IdentityAgent=none"));
+    assert!(args.contains("ControlPath=none"));
+    assert!(!args.contains("authorize-key-v1"));
+    assert!(!args.contains("/bin/sh -s"));
+    assert_eq!(fs::read(authorized).unwrap(), before);
 }

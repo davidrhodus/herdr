@@ -74,6 +74,25 @@ fn launch(args: &[&str]) -> io::Result<()> {
         )))
     }
 }
+fn register_with_retry(
+    mut register: impl FnMut() -> io::Result<()>,
+    mut wait: impl FnMut(),
+) -> io::Result<()> {
+    let mut error = match register() {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // bootout can return before launchd releases the old job registration.
+    // Retry the same per-user job briefly; never escalate to a root domain.
+    for _ in 0..19 {
+        wait();
+        match register() {
+            Ok(()) => return Ok(()),
+            Err(next) => error = next,
+        }
+    }
+    Err(error)
+}
 pub(crate) fn install(
     executable: &Path,
     config: &Path,
@@ -107,7 +126,10 @@ pub(crate) fn install(
     drop(file);
     std::fs::rename(temp, &path)?;
     let _ = launch(&["bootout", &target]);
-    launch(&["bootstrap", &domain(), &path.to_string_lossy()])
+    register_with_retry(
+        || launch(&["bootstrap", &domain(), &path.to_string_lossy()]),
+        || std::thread::sleep(std::time::Duration::from_millis(200)),
+    )
 }
 pub(crate) fn stop() -> io::Result<()> {
     let config = crate::config::config_dir();
@@ -141,5 +163,35 @@ mod tests {
         assert!(!text.contains("/bin/sh"));
         assert!(text.contains("<key>RunAtLoad</key><true/>"));
         assert!(text.contains("<key>SSH_AUTH_SOCK</key><string>/tmp/a&amp;b $sock</string>"));
+    }
+
+    #[test]
+    fn retries_transient_unload_races_and_reports_permanent_registration_failures() {
+        let mut attempts = 0;
+        let mut waits = 0;
+        register_with_retry(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(io::Error::other("unloading"))
+                } else {
+                    Ok(())
+                }
+            },
+            || waits += 1,
+        )
+        .unwrap();
+        assert_eq!((attempts, waits), (3, 2));
+        let mut failures = 0;
+        let error = register_with_retry(
+            || {
+                failures += 1;
+                Err(io::Error::other("permission denied"))
+            },
+            || {},
+        )
+        .unwrap_err();
+        assert_eq!(failures, 20);
+        assert_eq!(error.to_string(), "permission denied");
     }
 }

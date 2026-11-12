@@ -498,7 +498,12 @@ fn sync_status() -> String {
                 .as_str()
                 .map(|e| format!("\nConnection error: {}", e.replace(['\n', '\r'], " ")))
                 .unwrap_or_default();
-            format!("Shared list from {target}\n{success}{error}")
+            let credential = if value["sync_key"]["enrolled"] == true {
+                "Restricted sync-only SSH key"
+            } else {
+                "Preparing restricted sync-only SSH key"
+            };
+            format!("Shared list from {target}\n{success}\n{credential}{error}")
         }
         Err(_) => "Shared-list status is unavailable".into(),
     };

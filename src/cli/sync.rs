@@ -2,6 +2,14 @@ use crate::client::endpoint::catalog_sync::{self, Source};
 
 pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
     let result = match args {
+        [command] if command == "authorize-key-v1" => {
+            catalog_sync::restricted::authorize_stdio()?;
+            return Ok(0);
+        }
+        [command, root, registry, fingerprint] if command == "restricted-v1" => {
+            catalog_sync::restricted::serve(std::path::Path::new(root), registry, fingerprint)?;
+            return Ok(0);
+        }
         [command] if command == "serve" => {
             crate::client::sync_background::serve()?;
             return Ok(0);

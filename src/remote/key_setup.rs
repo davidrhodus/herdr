@@ -36,7 +36,7 @@ fn key_directory(root: &Path, target: &str) -> PathBuf {
         .join(format!("{:x}", Sha256::digest(target.as_bytes())))
 }
 
-fn ensure_directory(path: &Path) -> io::Result<()> {
+pub(super) fn ensure_directory(path: &Path) -> io::Result<()> {
     match crate::platform::create_remote_private_dir(path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -52,7 +52,7 @@ impl Drop for GenerationDirectory {
     }
 }
 
-fn generate_key(directory: &Path, private: &Path) -> io::Result<()> {
+pub(super) fn generate_key(directory: &Path, private: &Path) -> io::Result<()> {
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
     let temporary = directory.join(format!(
@@ -85,7 +85,7 @@ fn generate_key(directory: &Path, private: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn public_key(private: &Path) -> io::Result<(String, String)> {
+pub(super) fn public_key(private: &Path) -> io::Result<(String, String)> {
     let mut command = Command::new("ssh-keygen");
     command.args(["-y", "-P", "", "-f"]).arg(private);
     let output = captured(command)?;
@@ -97,7 +97,7 @@ fn public_key(private: &Path) -> io::Result<(String, String)> {
     parse_public_key(&output.stdout)
 }
 
-fn parse_public_key(bytes: &[u8]) -> io::Result<(String, String)> {
+pub(crate) fn parse_public_key(bytes: &[u8]) -> io::Result<(String, String)> {
     let text = std::str::from_utf8(bytes).map_err(io::Error::other)?;
     let fields: Vec<_> = text.split_whitespace().collect();
     let invalid = || io::Error::other("Expected an OpenSSH Ed25519 public key");

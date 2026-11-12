@@ -566,6 +566,12 @@ pub(crate) use unix_common::{
 };
 
 mod client_state;
+#[cfg(unix)]
+#[path = "unix_sync_keys.rs"]
+pub(crate) mod sync_keys;
+#[cfg(not(unix))]
+#[path = "sync_keys_unsupported.rs"]
+pub(crate) mod sync_keys;
 #[cfg(target_os = "linux")]
 #[path = "linux/terminal_import.rs"]
 pub(crate) mod terminal_import;

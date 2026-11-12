@@ -183,10 +183,8 @@ When developing from `~/herdr`, `cargo run --release` copies the release executa
 to a stable `~/.local/libexec/herdr-sync-agent` path for the background service,
 preserving one previous background executable. Debug builds and isolated test namespaces do not install
 login services.
-The service keeps the launching terminal's `PATH` and `SSH_AUTH_SOCK`, so an
-existing SSH agent can authenticate background connections. These settings are
-refreshed when the UI opens again. A session-scoped agent socket must remain
-available; a dedicated Herdr key or SSH config agent is preferable across logins.
+The service keeps the launching terminal's `PATH` and `SSH_AUTH_SOCK` for initial
+enrollment. These settings are refreshed when the UI opens again.
 No SSH listener or incoming connection to either manager is required.
 Server additions, renames, and removals sync about every 15 seconds even after
 the TUI closes. Sleep, logout, or lost network access pauses exchanges; local
@@ -198,9 +196,35 @@ passwords or accept changed host keys. Authenticate a server in the TUI once
 and use automatic key setup for unattended access. Existing terminal sessions
 are independent of syncing and service restarts.
 
+### Restricted SSH credentials for sync
+
+Updated managers automatically create a separate Ed25519 key for each shared
+SSH target. The first enrollment uses the existing login once, without prompting
+in the background, and adds only the new public key to the hosting account.
+The Unix host must run this build and already be opted into hosting. Enrollment
+does not update the server executable or enable hosting on another account.
+
+Its `authorized_keys` entry uses OpenSSH `restrict` and a forced Rust dispatcher.
+Only fixed registry-status and catalog-exchange requests are accepted. The key
+cannot request a shell, execute arbitrary commands, transfer files, allocate a
+PTY, forward ports, or forward an agent. The dispatcher is bound to the current
+registry and a fixed state directory; SSH-supplied paths or extra arguments do
+not change that binding. Existing terminal login keys remain independent.
+
+The client uses an isolated SSH configuration with only the sync identity,
+public-key authentication, and no multiplexed connection reuse. It verifies the
+enrolled fingerprint, registry identity, and rejection of a forbidden command
+before activating the credential. A missing, revoked, or broken active key
+causes sync to fail; it never falls back to a terminal/login key. Upgrade older
+hosts before using this transport. Private keys stay in the local private
+`client/sync-keys` state directory and never sync to another computer. Terminal
+access still has its normal SSH privileges; this restriction limits the sync
+credential, not an attacker who controls the entire Mac account.
+
 `herdr sync status --json` shows the selected source, last success or error,
 registry identity when hosting, and background-service heartbeat. The sync
-screen also shows whether background sync is running. Use
+screen also shows whether background sync is running and using a restricted key.
+The JSON `sync_key` field includes enrollment state and its public fingerprint. Use
 `herdr sync background start|stop|status` to manage the login service.
 **Stop sharing** / `herdr sync leave` preserves the local server list and disables
 automatic enrollment until `herdr sync auto` or another explicit setup action.
@@ -293,9 +317,12 @@ The shared host automatically records recent SSH catalog exchanges. Its
 it recently sent the same complete catalog the host currently holds; the first
 download alone does not establish this. Evidence expires after 60 seconds and
 becomes out of date when the catalog changes. These are connection diagnostics,
-not device identities: multiple managers behind one address share an entry.
+not device identities: managers sharing both an address and credential share
+an entry. Restricted keys have separate entries from older login-key clients.
 Checking the shared host does not require SSH access to either manager, and
 existing v1 clients contribute receipts without an update.
+Receipts also identify `restricted_key` versus `legacy_ssh` authentication and
+include the sync key's public fingerprint when the forced dispatcher was used.
 
 The shared list includes machine IDs, labels, SSH targets, sessions, and enabled
 state. SSH credentials and configuration, UI selection, and local terminal

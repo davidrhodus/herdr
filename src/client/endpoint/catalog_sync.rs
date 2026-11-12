@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::{EndpointCatalog, ProfileId, SavedSshEndpoint};
 mod automatic;
 mod receipts;
+pub(crate) mod restricted;
 pub(crate) use automatic::enable as enable_automatic;
 pub(crate) use automatic::remember_authenticated_target;
 
@@ -466,9 +467,13 @@ pub(crate) fn configure(source: Source) -> Result<(), String> {
 }
 
 fn host_exchange(root: &Path, incoming: &Document) -> Result<Document, String> {
-    host_exchange_tagged(root, incoming).map(|(_, document)| document)
+    host_exchange_tagged(root, incoming, None).map(|(_, document)| document)
 }
-fn host_exchange_tagged(root: &Path, incoming: &Document) -> Result<(String, Document), String> {
+fn host_exchange_tagged(
+    root: &Path,
+    incoming: &Document,
+    expected_registry: Option<&str>,
+) -> Result<(String, Document), String> {
     incoming.validate()?;
     let _guard = lock(root)?;
     let Some(mut state) = load(root)? else {
@@ -478,6 +483,9 @@ fn host_exchange_tagged(root: &Path, incoming: &Document) -> Result<(String, Doc
         return Err(
             "this peer is not a shared-list host; choose its configured source instead".into(),
         );
+    }
+    if expected_registry.is_some_and(|expected| expected != state.device) {
+        return Err("Shared registry changed; reauthorize the restricted sync key".into());
     }
     recover(root, &mut state)?;
     state.stage(&EndpointCatalog::load_from_path(&root.join("endpoints.json"))?.ssh)?;
@@ -616,12 +624,34 @@ fn reply_exchange(
     connection: Option<&str>,
     output: &mut impl std::io::Write,
 ) -> Result<(), String> {
-    let (registry, result) = host_exchange_tagged(root, incoming)?;
+    reply_exchange_bound(root, incoming, connection, output, None)
+}
+fn reply_exchange_bound(
+    root: &Path,
+    incoming: &Document,
+    connection: Option<&str>,
+    output: &mut impl std::io::Write,
+    restriction: Option<(&str, &str)>,
+) -> Result<(), String> {
+    let (registry, result) =
+        host_exchange_tagged(root, incoming, restriction.map(|(registry, _)| registry))?;
     serde_json::to_writer(&mut *output, &result).map_err(|e| e.to_string())?;
     output.flush().map_err(|e| e.to_string())?;
     // Diagnostics must never turn a completed exchange into a failed request.
     if let Some(connection) = connection {
-        if let Err(error) = receipts::record(root, &registry, connection, incoming, &result) {
+        let receipt = if let Some((_, fingerprint)) = restriction {
+            receipts::record_authenticated(
+                root,
+                &registry,
+                connection,
+                incoming,
+                &result,
+                Some(fingerprint),
+            )
+        } else {
+            receipts::record(root, &registry, connection, incoming, &result)
+        };
+        if let Err(error) = receipt {
             tracing::warn!(%error, "Could not record shared-list manager exchange");
         }
     }
@@ -637,8 +667,13 @@ pub(crate) fn status() -> Result<serde_json::Value, String> {
         }
     };
     if let Some(state) = load(&directory())? {
+        if let Source::Ssh { target } = &state.source {
+            value["sync_key"] = crate::remote::sync_key_status(target);
+        }
         if state.source == Source::Local {
             value["registry_id"] = serde_json::Value::String(state.device.clone());
+            value["restricted_sync_v1"] =
+                serde_json::Value::Bool(crate::platform::sync_keys::SUPPORTED);
             let catalog = EndpointCatalog::load_from_path(&directory().join("endpoints.json"))?;
             value["managers"] = receipts::status(
                 &directory(),

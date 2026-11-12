@@ -3989,51 +3989,21 @@ pub(crate) fn exchange_catalog(
     target: &str,
     document: &herdr_sync::Document,
 ) -> io::Result<herdr_sync::Document> {
-    super::validate_remote_target(target).map_err(io::Error::other)?;
-    if target.len() > 1024 || target.chars().any(char::is_control) {
-        return Err(io::Error::other("invalid sync SSH target"));
-    }
-    document.validate().map_err(io::Error::other)?;
-    let ssh = RemoteSsh::new_noninteractive(target.to_owned());
-    // Discovery is read-only. The subsequent exchange is never blindly retried.
-    let remote = match find_installed_remote_herdr(&ssh) {
-        Err(_) if ssh.prepare_shared_transport().unwrap_or(false) => {
-            find_installed_remote_herdr(&ssh)?
-        }
-        result => result?,
-    };
-    let command = catalog_sync_command(&remote.executable);
-    let input = serde_json::to_vec(document).map_err(io::Error::other)?;
-    let child = ssh
-        .command()
-        .arg(command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let output = super::process::wait_with_input_output_limit(
-        child,
-        input,
-        Duration::from_secs(20),
-        Arc::clone(&ssh.cancelled),
-        herdr_sync::MAX_BODY + 64 * 1024,
-    )?;
-    if !output.status.success() {
-        return Err(command_failed("peer catalog sync failed (ensure this build is installed and `herdr sync host` is enabled on the peer)", &output));
-    }
-    let output = normalize_remote_output(output)?;
-    if output.stdout.len() > herdr_sync::MAX_BODY {
-        return Err(io::Error::other("peer sync response exceeds size limit"));
-    }
-    let document: herdr_sync::Document = serde_json::from_slice(&output.stdout)
-        .map_err(|_| io::Error::other("invalid peer catalog sync response"))?;
-    document.validate().map_err(io::Error::other)?;
-    Ok(document)
+    super::sync_keys::exchange(target, document)
 }
 
-/// Read-only discovery: only accounts already hosting a shared catalog qualify.
-/// Authentication remains noninteractive and uses the saved device-local key.
+/// Only opted-in hosts qualify. Enroll a restricted sync key once, then use it
+/// for discovery without ordinary login credentials or shell probes.
 pub(crate) fn catalog_host_identity(target: &str) -> io::Result<Option<String>> {
+    super::sync_keys::host_identity(target)
+}
+
+// Only the enrollment path uses ordinary SSH. Once an active restricted
+// binding exists, all discovery and exchanges bypass this helper entirely.
+pub(super) fn enroll_catalog_key(
+    target: &str,
+    public: &str,
+) -> io::Result<Option<serde_json::Value>> {
     super::validate_remote_target(target).map_err(io::Error::other)?;
     let ssh = RemoteSsh::new_noninteractive(target.to_owned());
     let remote = find_installed_remote_herdr(&ssh)?;
@@ -4046,16 +4016,70 @@ pub(crate) fn catalog_host_identity(target: &str) -> io::Result<Option<String>> 
     }
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).map_err(io::Error::other)?;
-    Ok(
-        (value["enabled"] == true && value["source"]["kind"] == "local")
-            .then(|| {
-                value["registry_id"]
-                    .as_str()
-                    .filter(|id| herdr_sync::valid_id(id))
-                    .map(str::to_owned)
-            })
-            .flatten(),
-    )
+    if value["enabled"] != true || value["source"]["kind"] != "local" {
+        return Ok(None);
+    }
+    if value["restricted_sync_v1"] != true {
+        return Err(io::Error::other("Update the shared-list host to enable restricted sync keys; unrestricted catalog sync is disabled"));
+    }
+    let expected = value["registry_id"]
+        .as_str()
+        .filter(|id| herdr_sync::valid_id(id))
+        .ok_or_else(|| io::Error::other("Invalid shared registry identity"))?
+        .to_owned();
+    let child = ssh
+        .command()
+        .arg(remote.executable.command(&["sync", "authorize-key-v1"]))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let input =
+        serde_json::to_vec(&serde_json::json!({"public_key":public})).map_err(io::Error::other)?;
+    let output = super::process::wait_with_input_output_limit(
+        child,
+        input,
+        Duration::from_secs(20),
+        Arc::clone(&ssh.cancelled),
+        SSH_DIAGNOSTIC_OUTPUT_LIMIT,
+    )?;
+    if !output.status.success() {
+        return Err(command_failed(
+            "Restricted sync-key enrollment failed",
+            &output,
+        ));
+    }
+    let output = normalize_remote_output(output)?;
+    let reply: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(io::Error::other)?;
+    if reply["registry_id"] != expected {
+        return Err(io::Error::other(
+            "Shared registry changed during key enrollment",
+        ));
+    }
+    Ok(Some(reply))
+}
+
+pub(super) fn sync_ssh_configuration(target: &str) -> io::Result<String> {
+    let ssh = RemoteSsh::new_noninteractive(target.to_owned());
+    let mut command = ssh.base_command();
+    command.arg("-G").arg(target);
+    let output = super::process::wait_with_output_limit(
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?,
+        Duration::from_secs(10),
+        Arc::clone(&ssh.cancelled),
+        SSH_DIAGNOSTIC_OUTPUT_LIMIT,
+    )?;
+    if !output.status.success() {
+        return Err(command_failed(
+            "Could not resolve sync SSH routing",
+            &output,
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(io::Error::other)
 }
 
 pub(crate) fn prepare_catalog_host(target: &str) -> io::Result<()> {
@@ -4103,6 +4127,7 @@ pub(crate) fn prepare_catalog_host(target: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn catalog_sync_command(executable: &RemoteExecutable) -> String {
     let args = ["sync", "exchange-v1"];
     match executable {

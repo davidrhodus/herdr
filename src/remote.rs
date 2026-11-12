@@ -10,6 +10,8 @@ mod saved;
 pub(crate) mod setup_progress;
 #[cfg(unix)]
 mod ssh_agent;
+mod sync_keys;
+pub(crate) use sync_keys::status as sync_key_status;
 
 pub(crate) use args::*;
 pub(crate) use attach::*;
@@ -82,7 +84,7 @@ fn ssh_check_command(target: &str) -> String {
     format!("ssh {}", shell_quote(target))
 }
 
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value.chars().all(|ch| {
             ch.is_ascii_alphanumeric()

@@ -14,6 +14,8 @@ struct Receipt {
     last_exchange: u64,
     request_digest: String,
     response_digest: String,
+    #[serde(default)]
+    key_fingerprint: Option<String>,
 }
 
 fn now() -> u64 {
@@ -72,6 +74,16 @@ pub(super) fn record(
     incoming: &Document,
     response: &Document,
 ) -> Result<(), String> {
+    record_authenticated(root, registry, connection, incoming, response, None)
+}
+pub(super) fn record_authenticated(
+    root: &Path,
+    registry: &str,
+    connection: &str,
+    incoming: &Document,
+    response: &Document,
+    key_fingerprint: Option<&str>,
+) -> Result<(), String> {
     let Some(address) = address(connection) else {
         return Ok(());
     };
@@ -81,6 +93,7 @@ pub(super) fn record(
         last_exchange: now(),
         request_digest: digest(incoming)?,
         response_digest: digest(response)?,
+        key_fingerprint: key_fingerprint.map(str::to_owned),
     };
     let _guard = lock(root)?;
     let Some(state) = super::load(root)? else {
@@ -91,7 +104,10 @@ pub(super) fn record(
     }
     // A damaged diagnostics file must not prevent future receipts or sync.
     let mut receipts = load(root).unwrap_or_default();
-    receipts.retain(|old| old.registry == registry && old.address != address);
+    receipts.retain(|old| {
+        old.registry == registry
+            && (old.address != address || old.key_fingerprint != receipt.key_fingerprint)
+    });
     receipts.insert(0, receipt);
     receipts.sort_by_key(|r| std::cmp::Reverse(r.last_exchange));
     receipts.truncate(MAX_RECEIPTS);
@@ -118,6 +134,8 @@ pub(super) fn status(
     serde_json::Value::Array(load(root).unwrap_or_default().into_iter().filter(|receipt| receipt.registry == registry).map(|receipt| {
         let recent = receipt.last_exchange <= now && now - receipt.last_exchange <= RECENT_SECONDS;
         serde_json::json!({"address": receipt.address, "last_exchange": receipt.last_exchange, "recent": recent,
+            "authentication": if receipt.key_fingerprint.is_some() { "restricted_key" } else { "legacy_ssh" },
+            "key_fingerprint": receipt.key_fingerprint,
             "in_sync": catalog_matches && recent && receipt.request_digest == current && receipt.response_digest == current})
     }).collect())
 }
@@ -330,5 +348,31 @@ mod tests {
         }
         super::super::reply_exchange(&temp.0, &Document::default(), None, &mut Vec::new()).unwrap();
         assert!(load(&temp.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_and_restricted_clients_at_one_address_have_separate_receipts() {
+        let temp = Temp::new();
+        let registry = "d".repeat(32);
+        let document = doc();
+        let connection = "100.79.132.38 12345 100.109.85.54 22";
+        record(&temp.0, &registry, connection, &document, &document).unwrap();
+        record_authenticated(
+            &temp.0,
+            &registry,
+            connection,
+            &document,
+            &document,
+            Some("SHA256:sync-key"),
+        )
+        .unwrap();
+        let value = status(&temp.0, &registry, &document, true);
+        let rows = value.as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row["authentication"] == "legacy_ssh"));
+        assert!(rows
+            .iter()
+            .any(|row| row["authentication"] == "restricted_key"
+                && row["key_fingerprint"] == "SHA256:sync-key"));
     }
 }

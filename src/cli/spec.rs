@@ -352,6 +352,19 @@ fn required(name: &'static str, value_name: &'static str) -> Arg {
 fn sync_command() -> Command {
     Command::new("sync")
         .subcommand(
+            Command::new("authorize-key-v1")
+                .about("Authorize a restricted catalog sync public key")
+                .hide(true),
+        )
+        .subcommand(
+            Command::new("restricted-v1")
+                .about("Serve fixed catalog requests for a forced SSH command")
+                .hide(true)
+                .arg(Arg::new("root").required(true))
+                .arg(Arg::new("registry").required(true))
+                .arg(Arg::new("fingerprint").required(true)),
+        )
+        .subcommand(
             Command::new("auto").about(
                 "Automatically join an opted-in shared server list and start background sync",
             ),
