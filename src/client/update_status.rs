@@ -17,6 +17,25 @@ fn clean(value: &Value, limit: usize) -> Option<String> {
         .filter(|s| !s.is_empty() && s.len() <= limit && !s.chars().any(char::is_control))
         .map(str::to_owned)
 }
+fn last_seen(age: Option<u64>, host_fresh: bool) -> String {
+    let Some(age) = age else {
+        return "Check-in unknown".into();
+    };
+    let short = match age {
+        0..60 => format!("{}s", age / 5 * 5),
+        60..3600 => format!("{}m", age / 60),
+        3600..86400 => format!("{}h", age / 3600),
+        _ if age / 86400 <= 9999 => format!("{}d", age / 86400),
+        _ => "9999d+".into(),
+    };
+    if !host_fresh {
+        format!("Host stale · {short}")
+    } else if age > 150 {
+        format!("Seen {short} · stale")
+    } else {
+        format!("Seen {short} ago")
+    }
+}
 pub(super) fn present(
     value: Result<Value, String>,
     names: &BTreeMap<IpAddr, String>,
@@ -37,6 +56,7 @@ pub(super) fn present(
                 name: names.get(ip).cloned().unwrap_or_else(|| ip.to_string()),
                 status: "? Version unknown · auto ?".into(),
                 compact: "unknown auto ?".into(),
+                last_seen: "Check-in unknown".into(),
                 level: Level::Waiting,
             })
             .collect(),
@@ -103,6 +123,7 @@ pub(super) fn present(
                 name,
                 status: "? Version unknown · auto ?".into(),
                 compact: "unknown auto ?".into(),
+                last_seen: "No check-in yet".into(),
                 level: Level::Waiting,
             });
             lines.push("  Version unknown · no update report yet".into());
@@ -179,6 +200,7 @@ pub(super) fn present(
                 version.as_deref().unwrap_or("Version unknown")
             ),
             compact: format!("{short_version} auto {auto}"),
+            last_seen: last_seen(age, fresh),
             level: if good {
                 Level::Good
             } else if !recent {
@@ -305,6 +327,24 @@ mod tests {
         );
         assert_eq!(v.level, Level::Good);
         assert_eq!(v.badge, "Updates: 2 current · auto");
+    }
+    #[test]
+    fn sidebar_checkins_age_locally_and_distinguish_stale_host_from_stale_manager() {
+        let v = view(observation(), 1010);
+        assert_eq!(v.managers[0].last_seen, "Seen 15s ago");
+        let mut old = observation();
+        old["peers"]["managers"][1]["age_seconds"] = 180.into();
+        let v = view(old, 1005);
+        assert_eq!(v.managers[1].last_seen, "Seen 3m · stale");
+        assert_ne!(v.managers[1].level, Level::Good);
+        let v = view(observation(), 1091);
+        assert_eq!(v.managers[0].last_seen, "Host stale · 1m");
+        let v = view(observation(), 999);
+        assert_eq!(v.managers[0].last_seen, "Check-in unknown");
+        let mut missing = observation();
+        missing["peers"]["managers"].as_array_mut().unwrap().pop();
+        assert_eq!(view(missing, 1005).managers[1].last_seen, "No check-in yet");
+        assert!(last_seen(Some(u64::MAX), true).len() <= 20);
     }
     #[test]
     fn control_characters_in_remote_versions_are_not_drawn() {

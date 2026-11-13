@@ -41,6 +41,7 @@ pub(super) struct Manager {
     pub focus: usize,
     pub advanced: bool,
     pub setup_key: bool,
+    pub quick_add: bool,
     pub suggestions: Vec<String>,
     pub tailscale: tailscale_browser::Browser,
     pub sync: String,
@@ -78,6 +79,9 @@ pub(super) enum Hit {
     BrowseTailscale,
     RefreshTailscale,
     TailscaleDevice(usize),
+    QuickDevice(usize, u64),
+    TailscaleSearch,
+    ManualEntry,
     Field(usize),
     Suggestion(usize),
     Server(usize),
@@ -118,6 +122,7 @@ impl Manager {
             focus: 0,
             advanced: false,
             setup_key: true,
+            quick_add: false,
             suggestions: Vec::new(),
             tailscale: Default::default(),
             sync: "Checking shared-list status…".into(),
@@ -136,6 +141,23 @@ impl Manager {
             import_loading: false,
             import_report: None,
             import_workspace: None,
+        }
+    }
+    fn start_quick_add(&mut self, outcome: &mut ClientShellInput) {
+        self.page = Page::Tailscale { join: false };
+        self.quick_add = true;
+        self.fields = std::array::from_fn(|_| TextEditor::default());
+        self.fields[5] = tailscale_browser::suggested_username(&self.profiles)
+            .as_str()
+            .into();
+        self.focus = 0;
+        self.selected = 0;
+        self.advanced = false;
+        self.setup_key = true;
+        self.error = None;
+        self.tailscale = Default::default();
+        if let Some(action) = self.tailscale.refresh(self.id) {
+            outcome.actions.push(action);
         }
     }
     fn form(&self) -> AddServer {
@@ -184,12 +206,19 @@ impl ClientShellState {
             && self.mode == ClientShellMode::Terminal
     }
     pub(crate) fn receive_sync_status(&mut self, view: crate::client::sync_status::View) -> bool {
+        let cards_visible = self.last_composed_size.is_some_and(|(cols, rows)| {
+            let mut sidebar = self.layout(cols, rows).sidebar;
+            if sidebar.width == 0 && (self.snapshot.is_none() || self.pane_surface.is_none()) {
+                sidebar = Rect::new(0, 1, cols, rows.saturating_sub(2));
+            }
+            super::sync_badge::cards_visible(sidebar)
+        });
         let mut repaint = self.sync_view.badge != view.badge
             || self.sync_view.compact != view.compact
             || self.sync_view.level != view.level
             || self.sync_view.updates != view.updates
             || self.sync_view.update_level != view.update_level
-            || self.sync_view.managers != view.managers;
+            || (cards_visible && self.sync_view.managers != view.managers);
         if let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() {
             if matches!(manager.page, Page::Sync) && manager.sync != view.details {
                 let selected = menu_actions(manager).get(manager.selected).copied();
@@ -238,11 +267,15 @@ impl ClientShellState {
         manager.direct = self.direct_sync.clone();
         manager.sync = self.sync_view.details.clone();
         let id = manager.id;
+        if matches!(manager.page, Page::Add) {
+            manager.start_quick_add(outcome);
+        } else {
+            outcome
+                .actions
+                .push(ClientShellAction::MachineManager(Command::Discover { id }));
+        }
         self.overlay = Some(ClientShellOverlay::Machines(Box::new(manager)));
         self.chrome_drag = None;
-        outcome
-            .actions
-            .push(ClientShellAction::MachineManager(Command::Discover { id }));
         outcome.repaint = true;
     }
     pub(super) fn open_machine_context(
@@ -382,6 +415,7 @@ impl ClientShellState {
                     .and_then(|index| manager.tailscale.devices.get(*index))
                     .and_then(|device| device.target());
                 manager.tailscale.loading = false;
+                manager.tailscale.revision = machine_setup::next_id();
                 match result {
                     Ok(devices) => {
                         manager.tailscale.devices = devices
@@ -490,13 +524,17 @@ impl ClientShellState {
             Hit::DeclinePair(index)=>if let Some(p)=manager.direct.incoming.get(index){outcome.actions.push(ClientShellAction::MachineManager(Command::Direct{id:manager.id,action:crate::client::direct_sync::Action::Approve{request:p.request.clone(),accepted:false}}));},
             Hit::CancelPair=>if let Some(p)=&manager.direct.outgoing{outcome.actions.push(ClientShellAction::MachineManager(Command::Direct{id:manager.id,action:crate::client::direct_sync::Action::Cancel{request:p.request.clone()}}));},
             Hit::BrowseTailscale => if matches!(manager.page, Page::Add | Page::Join) {
-                manager.page=Page::Tailscale {join:matches!(manager.page,Page::Join)};
+                manager.quick_add=false;manager.focus=0;manager.page=Page::Tailscale {join:matches!(manager.page,Page::Join)};
                 if let Some(action)=manager.tailscale.refresh(manager.id) {outcome.actions.push(action);}
             },
             Hit::RefreshTailscale => if matches!(manager.page,Page::Tailscale{..}) {
                 if let Some(action)=manager.tailscale.refresh(manager.id) {outcome.actions.push(action);}
             },
-            Hit::TailscaleDevice(index) => if let Page::Tailscale{join}=manager.page {
+            Hit::TailscaleSearch => { manager.focus=0; },
+            Hit::ManualEntry => if matches!(manager.page,Page::Tailscale{join:false}) {manager.quick_add=false;manager.tailscale.loading=false;manager.tailscale.request=machine_setup::next_id();manager.page=Page::Add;manager.focus=0;manager.error=None;outcome.actions.push(ClientShellAction::MachineManager(Command::Discover{id:manager.id}));},
+            Hit::TailscaleDevice(index) | Hit::QuickDevice(index,_) => if let Page::Tailscale{join}=manager.page {
+                let valid=match hit {Hit::QuickDevice(_,revision)=>manager.quick_add && !manager.tailscale.loading && revision==manager.tailscale.revision, Hit::TailscaleDevice(_)=>!manager.quick_add,_=>false};
+                if !valid {self.overlay=Some(ClientShellOverlay::Machines(manager));return;}
                 if !manager.tailscale.matching_indices().contains(&index) {self.overlay=Some(ClientShellOverlay::Machines(manager));return;}
                 if let Some(target)=manager.tailscale.devices.get(index).and_then(|device|device.target()) {
                     let prior_user=manager.fields[0].trim().strip_prefix("ssh://").unwrap_or(manager.fields[0].trim()).rsplit_once('@').map(|(user,_)|user.to_owned()).filter(|user|!user.contains(':'));
@@ -504,6 +542,14 @@ impl ClientShellState {
                     else { manager.fields[0]=target.as_str().into();if manager.fields[5].is_empty(){if let Some(user)=prior_user{manager.fields[5]=user.as_str().into();}} }
                     manager.page=if join {Page::Join}else{Page::Add};
                     manager.focus=if join {0}else{5};manager.error=None;
+                    if manager.quick_add && !join {
+                        let device=&manager.tailscale.devices[index];
+                        if manager.fields[1].is_empty() { manager.fields[1]=device.name.as_str().into(); }
+                        let existing=tailscale_browser::existing_profiles(&manager.profiles,device,manager.fields[5].trim());
+                        if existing.len()==1 { if existing[0].enabled { operation=Some(Operation::Reconnect(existing[0].id.to_string())); } else {manager.page=Page::Manage(existing[0].clone());manager.error=Some("This saved server is disabled. Enable it here to reconnect.".into());} }
+                        else if existing.len()>1 { manager.page=Page::Servers;manager.error=Some("This device already has several saved sessions. Choose an existing server from Servers.".into()); }
+                        else { match manager.form().destination() { Ok(_)=>operation=Some(Operation::Add(manager.form())), Err(error)=>manager.error=Some(error) } }
+                    }
                 }
             },
             Hit::Close => {
@@ -516,20 +562,14 @@ impl ClientShellState {
                 outcome.actions.push(ClientShellAction::MachineManager(Command::Cancel { id: manager.id }));
                 manager.id = machine_setup::next_id();
                 manager.page = if matches!(manager.page,Page::DirectConfirm{..}) {Page::Managers}
-                else if let Page::Tailscale { join } = manager.page { if join { Page::Join } else { Page::Add } }
+                else if let Page::Tailscale { join } = manager.page { if join { Page::Join } else if manager.quick_add { Page::Servers } else { Page::Add } }
                 else if matches!(manager.page, Page::Running | Page::Approval(_))
                     || matches!(manager.page, Page::Done) && !manager.success {
                     manager.return_page.take().unwrap_or(Page::Servers)
                 } else { Page::Servers };
                 manager.profiles = self.machine_profiles.clone();
             }
-            Hit::Add => {
-                manager.page = Page::Add;
-                manager.focus = 0;
-                manager.fields = std::array::from_fn(|_| TextEditor::default());
-                manager.advanced = false;
-                manager.error = None;
-            }
+            Hit::Add => { manager.start_quick_add(outcome); }
             Hit::Advanced => manager.advanced = !manager.advanced,
             Hit::AutoKey => manager.setup_key = !manager.setup_key,
             Hit::Field(n) => if visible_fields(&manager).contains(&n) { manager.focus = n; },
@@ -715,7 +755,26 @@ impl ClientShellState {
                     self.machine_action(hit, outcome);
                     return true;
                 }
-                if matches!(manager.page, Page::Tailscale { .. }) {
+                if manager.quick_add
+                    && matches!(manager.page, Page::Tailscale { .. })
+                    && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                {
+                    manager.focus = if manager.focus == 5 { 0 } else { 5 };
+                    outcome.repaint = true;
+                    return true;
+                }
+                if manager.quick_add
+                    && matches!(manager.page, Page::Tailscale { .. })
+                    && manager.focus == 5
+                    && key.code == KeyCode::Enter
+                {
+                    manager.focus = 0;
+                    outcome.repaint = true;
+                    return true;
+                }
+                if matches!(manager.page, Page::Tailscale { .. })
+                    && !(manager.quick_add && manager.focus == 5)
+                {
                     if let Some(changed) = manager.tailscale.query.handle_key(key) {
                         if changed {
                             manager.selected = 0;
@@ -812,7 +871,9 @@ impl ClientShellState {
                 true
             }
             RawInputEvent::Paste(text) => {
-                if matches!(manager.page, Page::Tailscale { .. }) {
+                if matches!(manager.page, Page::Tailscale { .. })
+                    && !(manager.quick_add && manager.focus == 5)
+                {
                     manager.tailscale.query.insert(text);
                     manager.selected = 0;
                     outcome.repaint = true;
@@ -837,7 +898,9 @@ impl ClientShellState {
                 true
             }
             RawInputEvent::Text(text) => {
-                if matches!(manager.page, Page::Tailscale { .. }) {
+                if matches!(manager.page, Page::Tailscale { .. })
+                    && !(manager.quick_add && manager.focus == 5)
+                {
                     manager.tailscale.query.insert(text.as_str());
                     manager.selected = 0;
                     outcome.repaint = true;
@@ -907,6 +970,7 @@ fn visible_fields(manager: &Manager) -> &'static [usize] {
     match manager.page {
         Page::Add if manager.advanced => &[0, 5, 1, 2, 3, 4],
         Page::Add => &[0, 5, 1],
+        Page::Tailscale { join: false } if manager.quick_add => &[5],
         Page::Join => &[0],
         Page::Rename(_) => &[1],
         _ => &[],
@@ -919,6 +983,7 @@ fn editable(manager: &Manager) -> Option<usize> {
         } else {
             0
         }),
+        Page::Tailscale { join: false } if manager.quick_add && manager.focus == 5 => Some(5),
         Page::Join => Some(0),
         Page::Rename(_) => Some(1),
         _ => None,
@@ -945,8 +1010,15 @@ pub(super) fn menu_actions(manager: &Manager) -> Vec<Hit> {
             .tailscale
             .matching_indices()
             .into_iter()
-            .map(Hit::TailscaleDevice)
+            .map(|index| {
+                if manager.quick_add {
+                    Hit::QuickDevice(index, manager.tailscale.revision)
+                } else {
+                    Hit::TailscaleDevice(index)
+                }
+            })
             .chain(std::iter::once(Hit::RefreshTailscale))
+            .chain(manager.quick_add.then_some(Hit::ManualEntry))
             .collect(),
         Page::Servers => [
             vec![Hit::Add, Hit::Sync],
@@ -1042,6 +1114,7 @@ pub(super) fn render(
         Page::DirectConfirm { .. } => "Confirm manager pairing",
         Page::Servers => "Servers",
         Page::Add => "Add server",
+        Page::Tailscale { .. } if manager.quick_add => "Add an online server",
         Page::Tailscale { .. } => "Tailscale devices",
         Page::Manage(p) => &p.label,
         Page::Imports(_) => "Import running terminal sessions",

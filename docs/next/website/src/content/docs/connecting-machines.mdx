@@ -592,3 +592,21 @@ check marks a fresh report matching the latest signed release; `?` marks stale
 or missing confirmation. Narrow cards shorten the version to its complete build
 number. Short windows and collapsed sidebars retain the compact indicators;
 expand the sidebar or enlarge the window to show both manager cards.
+
+Each manager card includes **Seen 35s ago**, updated automatically. A report
+older than 150 seconds is marked **stale**. **Host stale** means the update
+host's observation is no longer fresh; it does not establish that a particular
+Mac is offline. Missing reports show an unknown check-in.
+
+**Add server** opens the online Tailscale device list immediately. Type to
+search, then select a device or press Enter to connect and set it up. Herdr
+fills the device's address and name, enables automatic SSH-key setup, and
+suggests a username when enabled saved servers agree on one. Click Username
+or press Tab to edit it; leave it blank to use SSH configuration or your local
+username. Password and installation approvals remain inside the TUI.
+
+Choosing a device already saved for that username reconnects its existing
+profile instead of adding a duplicate. If several saved sessions match, choose
+the desired saved server. **Manual / advanced** remains available for other
+addresses, ports, keys, and session settings. Browsing devices does not connect
+to or install anything until you select one.

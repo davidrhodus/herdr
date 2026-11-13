@@ -17,6 +17,7 @@ pub(crate) struct ManagerRow {
     pub name: String,
     pub status: String,
     pub compact: String,
+    pub last_seen: String,
     pub level: Level,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

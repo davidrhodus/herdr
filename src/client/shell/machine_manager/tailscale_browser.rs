@@ -5,6 +5,7 @@ use crate::client::machine_setup::TailscaleDevice;
 #[derive(Debug, Default)]
 pub(in crate::client::shell) struct Browser {
     pub request: u64,
+    pub revision: u64,
     pub loading: bool,
     pub devices: Vec<TailscaleDevice>,
     pub error: Option<String>,
@@ -61,7 +62,11 @@ pub(super) fn render(
         inner.x,
         inner.y + 1,
         inner.width,
-        "Online devices only · Type to search · ↑/↓ select · Enter fills form",
+        if manager.quick_add {
+            "Online devices · Type to search · Select to add · Tab edits username"
+        } else {
+            "Online devices only · Type to search · ↑/↓ select · Enter fills form"
+        },
         muted,
     );
     let search_width = inner.width.saturating_sub(8);
@@ -74,6 +79,44 @@ pub(super) fn render(
         &format!("Search: {query}"),
         normal.bg(palette.active_row_bg),
     );
+    hits.push((
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        Hit::TailscaleSearch,
+    ));
+    if manager.quick_add {
+        let username = manager.fields[5].as_str();
+        put_text(
+            buffer,
+            inner.x,
+            inner.y + 3,
+            inner.width,
+            &format!(
+                "Username: {}",
+                if username.is_empty() {
+                    "(SSH config / local user)"
+                } else {
+                    username
+                }
+            ),
+            if manager.focus == 5 {
+                normal.bg(palette.active_row_bg)
+            } else {
+                normal
+            },
+        );
+        hits.push((
+            Rect::new(inner.x, inner.y + 3, inner.width, 1),
+            Hit::Field(5),
+        ));
+        put_text(
+            buffer,
+            inner.x,
+            inner.y + 4,
+            inner.width,
+            "SSH key or password · Rust + key setup handled here",
+            muted,
+        );
+    }
     let matches = browser.matching_indices();
     let online = browser
         .devices
@@ -85,8 +128,15 @@ pub(super) fn render(
     } else {
         format!("{} matching · {} online", matches.len(), online)
     };
-    put_text(buffer, inner.x, inner.y + 3, inner.width, &summary, normal);
-    let mut top = inner.y + 5;
+    put_text(
+        buffer,
+        inner.x,
+        inner.y + if manager.quick_add { 5 } else { 3 },
+        inner.width,
+        &summary,
+        normal,
+    );
+    let mut top = inner.y + if manager.quick_add { 7 } else { 5 };
     let bottom = inner.bottom().saturating_sub(3);
     if let Some(error) = &browser.error {
         if browser.devices.is_empty() {
@@ -110,7 +160,11 @@ pub(super) fn render(
         }
     } else if matches.is_empty() && !browser.loading {
         let message = if online == 0 {
-            "No online Tailscale devices are visible. Check that your servers are connected, then Refresh; or go Back to enter an address."
+            if manager.quick_add {
+                "No online devices are visible. Refresh or choose Manual / advanced to enter an address."
+            } else {
+                "No online Tailscale devices are visible. Check that your servers are connected, then Refresh; or go Back to enter an address."
+            }
         } else {
             "No online devices match your search. Edit the search or press Ctrl+U to clear it."
         };
@@ -193,16 +247,36 @@ pub(super) fn render(
                 );
             }
         }
-        hits.push((rect, Hit::TailscaleDevice(index)));
+        hits.push((
+            rect,
+            if manager.quick_add {
+                Hit::QuickDevice(index, browser.revision)
+            } else {
+                Hit::TailscaleDevice(index)
+            },
+        ));
         y = y.saturating_add(rows + 1);
     }
-    let refresh = Rect::new(inner.x, inner.bottom() - 2, inner.width.min(24), 1);
+    let refresh = Rect::new(
+        inner.x,
+        inner.bottom() - 2,
+        inner.width.min(if manager.quick_add { 12 } else { 24 }),
+        1,
+    );
     put_text(
         buffer,
         refresh.x,
         refresh.y,
         refresh.width,
-        if browser.loading {
+        if manager.quick_add {
+            if browser.loading {
+                "[ Loading ]"
+            } else if manager.selected == matches.len() {
+                "> Refresh"
+            } else {
+                "[ Refresh ]"
+            }
+        } else if browser.loading {
             "[ Refreshing… ]"
         } else if manager.selected == matches.len() {
             "> Refresh (Ctrl+R)"
@@ -216,10 +290,112 @@ pub(super) fn render(
         },
     );
     hits.push((refresh, Hit::RefreshTailscale));
-    (search_width > 0).then_some(crate::protocol::CursorState {
-        x: inner.x + 8 + cursor_col.min(search_width.saturating_sub(1)),
-        y: inner.y + 2,
-        visible: true,
-        shape: 6,
-    })
+    if manager.quick_add && inner.width >= 24 {
+        let manual = Rect::new(inner.x + 13, inner.bottom() - 2, inner.width - 13, 1);
+        put_text(
+            buffer,
+            manual.x,
+            manual.y,
+            manual.width,
+            if manual.width >= 21 {
+                "[ Manual / advanced ]"
+            } else {
+                "[ Manual ]"
+            },
+            normal.fg(palette.accent),
+        );
+        hits.push((manual, Hit::ManualEntry));
+    }
+    (search_width > 0 && !(manager.quick_add && manager.focus == 5)).then_some(
+        crate::protocol::CursorState {
+            x: inner.x + 8 + cursor_col.min(search_width.saturating_sub(1)),
+            y: inner.y + 2,
+            visible: true,
+            shape: 6,
+        },
+    )
+}
+
+pub(super) fn suggested_username(profiles: &[SavedSshEndpoint]) -> String {
+    let users: std::collections::BTreeSet<_> = profiles
+        .iter()
+        .filter(|p| p.enabled)
+        .filter_map(|p| {
+            p.target
+                .strip_prefix("ssh://")
+                .unwrap_or(&p.target)
+                .rsplit_once('@')
+                .map(|(user, _)| user)
+        })
+        .collect();
+    if users.len() == 1 {
+        users.iter().next().copied().unwrap_or("").into()
+    } else {
+        String::new()
+    }
+}
+pub(super) fn existing_profiles<'a>(
+    profiles: &'a [SavedSshEndpoint],
+    device: &TailscaleDevice,
+    username: &str,
+) -> Vec<&'a SavedSshEndpoint> {
+    profiles
+        .iter()
+        .filter(|p| {
+            let authority = p.target.strip_prefix("ssh://").unwrap_or(&p.target);
+            let (user, host) = authority
+                .rsplit_once('@')
+                .map_or(("", authority), |(user, host)| (user, host));
+            if user != username {
+                return false;
+            }
+            let host = if let Some(rest) = host.strip_prefix('[') {
+                rest.split_once(']').map_or(rest, |(host, _)| host)
+            } else if host.matches(':').count() == 1 {
+                host.split_once(':').map_or(host, |(host, _)| host)
+            } else {
+                host
+            };
+            device.dns.as_ref().is_some_and(|dns| {
+                dns.trim_end_matches('.')
+                    .eq_ignore_ascii_case(host.trim_end_matches('.'))
+            }) || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| device.ips.contains(&ip))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn saved_profile_matching_honors_username_and_dual_stack_addresses() {
+        let profiles = vec![
+            SavedSshEndpoint::new("Alice", "ssh://alice@[fd7a:115c:a1e0::2]:2222", "main").unwrap(),
+            SavedSshEndpoint::new("Bob", "bob@build.tailnet.ts.net", "main").unwrap(),
+        ];
+        let device = TailscaleDevice {
+            name: "Build".into(),
+            dns: Some("build.tailnet.ts.net".into()),
+            ips: vec![
+                "100.90.0.2".parse().unwrap(),
+                "fd7a:115c:a1e0::2".parse().unwrap(),
+            ],
+            online: Some(true),
+        };
+        assert_eq!(
+            existing_profiles(&profiles, &device, "alice")[0].id,
+            profiles[0].id
+        );
+        assert_eq!(
+            existing_profiles(&profiles, &device, "bob")[0].id,
+            profiles[1].id
+        );
+        assert!(existing_profiles(&profiles, &device, "").is_empty());
+        assert!(suggested_username(&profiles).is_empty());
+        let mut profiles = profiles;
+        profiles[0].enabled = false;
+        assert_eq!(suggested_username(&profiles), "bob");
+    }
 }

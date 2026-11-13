@@ -1144,7 +1144,7 @@ fn saved_machine_preserves_endpoint_scoped_worktree_collapses() {
     state.activate_context_menu_item(toggle_index, &mut ClientShellInput::default());
 
     let frame = state
-        .compose(100, 28)
+        .compose(100, 30)
         .expect("collapsed local worktree group");
     assert!(!state
         .hits
@@ -1177,7 +1177,7 @@ fn saved_machine_preserves_endpoint_scoped_worktree_collapses() {
     remote_surface.boot_id = "remote-boot".into();
     state.set_pane_surface(remote_surface);
     state
-        .compose(100, 28)
+        .compose(100, 30)
         .expect("active remote worktree group");
     let mut switch = ClientShellInput::default();
     state.record_binding(
@@ -1243,7 +1243,7 @@ fn saved_machine_preserves_endpoint_scoped_worktree_collapses() {
         row: remote_toggle.y,
         modifiers: KeyModifiers::empty(),
     })]);
-    state.compose(100, 28).expect("both groups collapsed");
+    state.compose(100, 30).expect("both groups collapsed");
     assert!(!state
         .hits
         .workspaces
@@ -1264,7 +1264,7 @@ fn saved_machine_preserves_endpoint_scoped_worktree_collapses() {
         row: local_toggle.y,
         modifiers: KeyModifiers::empty(),
     })]);
-    state.compose(100, 28).expect("only remote group collapsed");
+    state.compose(100, 30).expect("only remote group collapsed");
     assert!(state
         .hits
         .workspaces

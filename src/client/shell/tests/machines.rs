@@ -13,6 +13,7 @@ fn open(shell: &mut ClientShellState) {
     let mut outcome = ClientShellInput::default();
     shell.open_add_server(&mut outcome);
     assert!(outcome.requests.is_empty());
+    shell.machine_action(Hit::ManualEntry, &mut ClientShellInput::default());
 }
 fn press(shell: &mut ClientShellState, code: KeyCode) -> ClientShellInput {
     shell.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
@@ -541,6 +542,7 @@ fn machine_settings_and_suggestions_are_client_local_and_stale_events_are_ignore
         sync: "Sync off".into()
     }));
     state.machine_action(Hit::Add, &mut outcome);
+    state.machine_action(Hit::ManualEntry, &mut outcome);
     press(&mut state, KeyCode::Down);
     press(&mut state, KeyCode::Enter);
     let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
@@ -1342,4 +1344,193 @@ fn automatic_update_waits_for_dialogs_and_navigation_to_finish() {
     assert!(!state.automatic_update_ready());
     state.mode = ClientShellMode::Terminal;
     assert!(state.automatic_update_ready());
+}
+
+fn quick_add(state: &mut ClientShellState) -> (u64, u64) {
+    let mut outcome = ClientShellInput::default();
+    state.open_add_server(&mut outcome);
+    let [ClientShellAction::MachineManager(Command::Tailscale { id, request })] =
+        outcome.actions.as_slice()
+    else {
+        panic!("discovery must not connect: {:?}", outcome.actions)
+    };
+    (*id, *request)
+}
+#[test]
+fn quick_add_discovers_immediately_and_one_selection_prefills_and_starts_setup() {
+    let mut state = shell();
+    state.machine_profiles = vec![profile("Existing")];
+    let (id, request) = quick_add(&mut state);
+    assert!(!state.receive_machine_event(Event::Tailscale {
+        id,
+        request: request + 1,
+        result: Ok(vec![])
+    }));
+    assert!(state.receive_machine_event(Event::Tailscale {
+        id,
+        request,
+        result: Ok(vec![
+            tail_device(
+                "New build",
+                Some(true),
+                Some("new.tailnet.ts.net"),
+                "100.90.0.3"
+            ),
+            tail_device("Offline", Some(false), None, "100.90.0.4")
+        ])
+    }));
+    state.compose(100, 36).unwrap();
+    assert!(state
+        .hits
+        .machine_actions
+        .iter()
+        .any(|(_, h)| *h == Hit::ManualEntry));
+    let outcome = press(&mut state, KeyCode::Enter);
+    let [ClientShellAction::MachineManager(Command::Run {
+        operation: Operation::Add(form),
+        ..
+    })] = outcome.actions.as_slice()
+    else {
+        panic!("{:?}", outcome.actions)
+    };
+    assert_eq!(form.target, "new.tailnet.ts.net");
+    assert_eq!(form.username, "you");
+    assert_eq!(form.label, "New build");
+    assert!(form.setup_key);
+    assert_eq!(form.destination().unwrap(), "you@new.tailnet.ts.net");
+    assert!(!state.receive_machine_event(Event::Tailscale {
+        id,
+        request,
+        result: Ok(vec![])
+    }));
+}
+#[test]
+fn quick_add_username_edit_is_separate_from_search_and_manual_entry_preserves_it() {
+    let mut state = shell();
+    let (id, request) = quick_add(&mut state);
+    state.receive_machine_event(Event::Tailscale {
+        id,
+        request,
+        result: Ok(vec![tail_device("Build", Some(true), None, "100.90.0.2")]),
+    });
+    press(&mut state, KeyCode::Tab);
+    state.handle_raw_events(vec![RawInputEvent::Text(TextCommit::new("bob"))]);
+    let outcome = press(&mut state, KeyCode::Enter);
+    assert!(outcome.actions.is_empty());
+    let Some(ClientShellOverlay::Machines(m)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(m.fields[5].as_str(), "bob");
+    assert!(m.tailscale.query.is_empty());
+    assert_eq!(m.focus, 0);
+    state.machine_action(Hit::ManualEntry, &mut ClientShellInput::default());
+    let Some(ClientShellOverlay::Machines(m)) = &state.overlay else {
+        panic!()
+    };
+    assert!(matches!(m.page, Page::Add));
+    assert!(!m.quick_add);
+    assert_eq!(m.fields[5].as_str(), "bob");
+}
+#[test]
+fn quick_add_reuses_matching_saved_profile_but_never_overrides_edited_username() {
+    for username in ["you", "bob", ""] {
+        let mut state = shell();
+        let saved = profile("Saved build");
+        state.machine_profiles = vec![saved.clone()];
+        let (id, request) = quick_add(&mut state);
+        state.receive_machine_event(Event::Tailscale {
+            id,
+            request,
+            result: Ok(vec![tail_device(
+                "Build",
+                Some(true),
+                Some("build.tailnet.ts.net"),
+                "100.90.0.2",
+            )]),
+        });
+        if let Some(ClientShellOverlay::Machines(m)) = &mut state.overlay {
+            m.fields[5] = username.into();
+        }
+        let outcome = press(&mut state, KeyCode::Enter);
+        let [ClientShellAction::MachineManager(Command::Run { operation, .. })] =
+            outcome.actions.as_slice()
+        else {
+            panic!("{:?}", outcome.actions)
+        };
+        if username == "you" {
+            assert!(matches!(operation,Operation::Reconnect(id) if id==saved.id.as_str()));
+        } else {
+            let Operation::Add(form) = operation else {
+                panic!()
+            };
+            assert_eq!(form.username, username);
+            assert_eq!(
+                form.destination().unwrap(),
+                if username.is_empty() {
+                    "build.tailnet.ts.net"
+                } else {
+                    "bob@build.tailnet.ts.net"
+                }
+            );
+        }
+    }
+}
+#[test]
+fn checkin_only_updates_repaint_visible_cards_but_not_collapsed_summary() {
+    for mouse in [true, false] {
+        let mut state = shell();
+        state.config.mouse_capture = mouse;
+        let mut view = crate::client::sync_status::View::default();
+        view.managers.push(crate::client::sync_status::ManagerRow {
+            name: "Laptop".into(),
+            status: "✓ v0.9.5 b3 · auto on".into(),
+            compact: "b3 auto on".into(),
+            last_seen: "Seen 5s ago".into(),
+            level: crate::client::sync_status::Level::Good,
+        });
+        state.receive_sync_status(view.clone());
+        state.compose(140, 48).unwrap();
+        view.managers[0].last_seen = "Seen 10s ago".into();
+        assert!(state.receive_sync_status(view.clone()));
+        state.sidebar_collapsed = true;
+        state.compose(140, 48).unwrap();
+        view.managers[0].last_seen = "Seen 15s ago".into();
+        assert!(!state.receive_sync_status(view));
+    }
+}
+
+#[test]
+fn quick_add_rejects_stale_mouse_hits_after_a_device_list_refresh() {
+    let mut state = shell();
+    let (id, request) = quick_add(&mut state);
+    state.receive_machine_event(Event::Tailscale {
+        id,
+        request,
+        result: Ok(vec![tail_device("First", Some(true), None, "100.90.0.2")]),
+    });
+    state.compose(100, 36).unwrap();
+    let hit = state
+        .hits
+        .machine_actions
+        .iter()
+        .find_map(|(_, h)| matches!(h, Hit::QuickDevice(..)).then_some(*h))
+        .unwrap();
+    let refresh = refresh_tailnet(&mut state);
+    let [ClientShellAction::MachineManager(Command::Tailscale { request, .. })] =
+        refresh.actions.as_slice()
+    else {
+        panic!()
+    };
+    state.receive_machine_event(Event::Tailscale {
+        id,
+        request: *request,
+        result: Ok(vec![tail_device("Second", Some(true), None, "100.90.0.3")]),
+    });
+    let mut stale = ClientShellInput::default();
+    state.machine_action(hit, &mut stale);
+    assert!(stale.actions.is_empty());
+    let outcome = press(&mut state, KeyCode::Enter);
+    assert!(
+        matches!(outcome.actions.as_slice(),[ClientShellAction::MachineManager(Command::Run{operation:Operation::Add(form),..})] if form.target=="100.90.0.3")
+    );
 }

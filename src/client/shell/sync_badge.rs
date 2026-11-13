@@ -8,10 +8,13 @@ fn footer_rows(area: Rect) -> u16 {
     } else if area.height < 12 {
         2
     } else if area.width >= 21 && area.height >= 24 {
-        7
+        9
     } else {
         3
     }
+}
+pub(super) fn cards_visible(area: Rect) -> bool {
+    footer_rows(area) == 9
 }
 pub(super) fn content_area(area: Rect) -> Rect {
     Rect::new(
@@ -103,10 +106,10 @@ pub(super) fn paint(
         );
         hits.sync_status.height = 2;
     }
-    if footer_rows(area) == 7 {
-        let start = area.bottom() - 7;
+    if cards_visible(area) {
+        let start = area.bottom() - 9;
         for index in 0..2 {
-            let y = start + index * 2;
+            let y = start + index * 3;
             let manager = view.managers.get(usize::from(index));
             let color = match manager.map(|m| m.level) {
                 Some(Level::Good) => palette.green,
@@ -139,9 +142,19 @@ pub(super) fn paint(
                     .unwrap_or("? Version unknown · auto ?"),
                 Style::default().fg(color).bg(palette.sidebar_bg),
             );
+            render::put_text(
+                buffer,
+                row.x,
+                y + 2,
+                row.width,
+                manager
+                    .map(|m| m.last_seen.as_str())
+                    .unwrap_or("Check-in unknown"),
+                Style::default().fg(color).bg(palette.sidebar_bg),
+            );
         }
         hits.sync_status.y = start;
-        hits.sync_status.height = 6;
+        hits.sync_status.height = 8;
     }
 }
 
@@ -215,6 +228,7 @@ mod tests {
                     name: name.into(),
                     status: "✓ v0.9.5 b3 · auto on".into(),
                     compact: "b3 auto on".into(),
+                    last_seen: "Seen 35s ago".into(),
                     level: crate::client::sync_status::Level::Good,
                 })
                 .collect(),
@@ -226,12 +240,14 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>()
         };
-        assert!(line(23).starts_with("David’s Mac Studio"));
-        assert!(line(24).starts_with("✓ v0.9.5 b3 · auto on"));
-        assert!(line(25).starts_with("David’s MacBook Pro"));
-        assert!(line(26).starts_with("✓ v0.9.5 b3 · auto on"));
-        assert_eq!(content_area(area).bottom(), 23);
-        assert_eq!(hits.sync_status.y, 23);
+        assert!(line(21).starts_with("David’s Mac Studio"));
+        assert!(line(22).starts_with("✓ v0.9.5 b3 · auto on"));
+        assert!(line(23).starts_with("Seen 35s ago"));
+        assert!(line(24).starts_with("David’s MacBook Pro"));
+        assert!(line(25).starts_with("✓ v0.9.5 b3 · auto on"));
+        assert!(line(26).starts_with("Seen 35s ago"));
+        assert_eq!(content_area(area).bottom(), 21);
+        assert_eq!(hits.sync_status.y, 21);
         assert_eq!(hits.sync_status.bottom(), 29);
         assert!(line(29).starts_with(version_text(25)));
     }
@@ -247,11 +263,12 @@ mod tests {
                 name: "Laptop".into(),
                 status: format!("? v0.9.5 b4294967295 · auto {auto}"),
                 compact: compact.clone(),
+                last_seen: "Seen 3m · stale".into(),
                 level: crate::client::sync_status::Level::Waiting,
             });
             paint(&mut buffer, area, &view, &Palette::catppuccin(), &mut hits);
             let drawn: String = (0..area.width - 1)
-                .map(|x| buffer[(x, 24)].symbol())
+                .map(|x| buffer[(x, 22)].symbol())
                 .collect();
             assert!(drawn.starts_with(&compact), "{drawn}");
         }

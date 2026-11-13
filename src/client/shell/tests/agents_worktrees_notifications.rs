@@ -396,7 +396,7 @@ fn duplicate_repo_parent_drag_does_not_target_its_own_move_block() {
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state
-        .compose(106, 24)
+        .compose(106, 26)
         .expect("separated repository parents");
     let source = state.hits.workspaces[0].rect;
     let target = state.hits.workspaces[2].rect;
@@ -458,7 +458,7 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
-    state.compose(106, 28).expect("worktree workspaces");
+    state.compose(106, 30).expect("worktree workspaces");
     assert!(state.hits.workspaces[1].indented);
     let parent = state.hits.workspaces[0].rect;
     let child = state.hits.workspaces[1].rect;
@@ -493,7 +493,7 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
             )
     ));
 
-    state.compose(106, 28).expect("worktree child");
+    state.compose(106, 30).expect("worktree child");
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: child.x + 2,
@@ -519,7 +519,7 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state
-        .compose(106, 28)
+        .compose(106, 30)
         .expect("repository block with duplicate root");
     let duplicate = state.hits.workspaces[1].rect;
     let other = state.hits.workspaces[3].rect;
