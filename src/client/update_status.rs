@@ -1,5 +1,5 @@
 //! Local-only presentation of the elected updater's bounded host observations.
-use super::sync_status::Level;
+use super::sync_status::{Level, ManagerRow};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,6 +9,7 @@ pub(super) struct View {
     pub badge: String,
     pub level: Level,
     pub details: String,
+    pub managers: Vec<ManagerRow>,
 }
 fn clean(value: &Value, limit: usize) -> Option<String> {
     value
@@ -27,6 +28,18 @@ pub(super) fn present(
         badge: "Updates: unconfirmed".into(),
         level: Level::Waiting,
         details: format!("Manager updates\n{reason}\nClick Refresh status to check again."),
+        managers: expected
+            .iter()
+            .map(|ip| aliases.get(ip).copied().unwrap_or(*ip))
+            .collect::<BTreeSet<_>>()
+            .iter()
+            .map(|ip| ManagerRow {
+                name: names.get(ip).cloned().unwrap_or_else(|| ip.to_string()),
+                status: "? Version unknown · auto ?".into(),
+                compact: "unknown auto ?".into(),
+                level: Level::Waiting,
+            })
+            .collect(),
     };
     let value = match value {
         Ok(v) => v,
@@ -69,6 +82,7 @@ pub(super) fn present(
         lines.push("Host status is stale; versions below are last reported.".into());
     }
     let mut current = 0;
+    let mut sidebar = Vec::new();
     for ip in &addresses {
         lines.push(String::new());
         lines.push(format!(
@@ -79,7 +93,18 @@ pub(super) fn present(
                 .map(String::as_str)
                 .unwrap_or("Manager")
         ));
+        let name = names
+            .get(ip)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| ip.to_string());
         let Some(row) = managers.get(ip) else {
+            sidebar.push(ManagerRow {
+                name,
+                status: "? Version unknown · auto ?".into(),
+                compact: "unknown auto ?".into(),
+                level: Level::Waiting,
+            });
             lines.push("  Version unknown · no update report yet".into());
             continue;
         };
@@ -121,6 +146,47 @@ pub(super) fn present(
         } else {
             "Update not yet confirmed"
         };
+        let auto = if !recent {
+            "?"
+        } else if automatic {
+            "on"
+        } else if report["enabled"] == false {
+            "off"
+        } else {
+            "?"
+        };
+        let short_version = version
+            .as_deref()
+            .and_then(|v| v.split_whitespace().last())
+            .filter(|s| {
+                s.starts_with('b')
+                    && s.len() <= 11
+                    && s.len() > 1
+                    && s[1..].bytes().all(|b| b.is_ascii_digit())
+            })
+            .unwrap_or("unknown");
+        sidebar.push(ManagerRow {
+            name,
+            status: format!(
+                "{} {} · auto {auto}",
+                if good {
+                    "✓"
+                } else if !recent {
+                    "?"
+                } else {
+                    "!"
+                },
+                version.as_deref().unwrap_or("Version unknown")
+            ),
+            compact: format!("{short_version} auto {auto}"),
+            level: if good {
+                Level::Good
+            } else if !recent {
+                Level::Waiting
+            } else {
+                Level::Warning
+            },
+        });
         lines.push(format!(
             "  {} · {state}",
             version.unwrap_or_else(|| "Version unknown".into())
@@ -151,6 +217,7 @@ pub(super) fn present(
         },
         level: if good { Level::Good } else { Level::Warning },
         details: lines.join("\n"),
+        managers: sidebar,
     }
 }
 
@@ -187,6 +254,9 @@ mod tests {
             assert!(v.details.contains(expected), "{expected}");
         }
         assert_eq!(v.badge, "Updates: 2 current · auto");
+        assert_eq!(v.managers[0].name, "Laptop");
+        assert_eq!(v.managers[1].name, "Desktop");
+        assert_eq!(v.managers[0].status, "✓ v0.9.5 b2 · auto on");
     }
     #[test]
     fn stale_future_missing_old_disabled_failed_and_mismatched_reports_never_confirm_current() {
@@ -210,6 +280,8 @@ mod tests {
             }
             let view = view(v, at);
             assert_ne!(view.level, Level::Good, "case {case}");
+            assert_ne!(view.managers[1].level, Level::Good, "case {case}");
+            assert!(!view.managers[1].status.starts_with('✓'), "case {case}");
         }
     }
     #[test]

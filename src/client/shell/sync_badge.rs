@@ -7,6 +7,8 @@ fn footer_rows(area: Rect) -> u16 {
         1
     } else if area.height < 12 {
         2
+    } else if area.width >= 21 && area.height >= 24 {
+        7
     } else {
         3
     }
@@ -54,7 +56,7 @@ pub(super) fn paint(
     }
     let row = Rect::new(
         area.x,
-        area.bottom() - footer_rows(area),
+        area.bottom() - footer_rows(area).min(3),
         area.width.saturating_sub(1),
         1,
     );
@@ -80,7 +82,7 @@ pub(super) fn paint(
         Style::default().bg(palette.sidebar_bg).fg(color),
     );
     hits.sync_status = row;
-    if footer_rows(area) == 3 {
+    if footer_rows(area) >= 3 {
         let updates = Rect::new(row.x, row.y + 1, row.width, 1);
         let color = match view.update_level {
             Level::Good => palette.green,
@@ -100,6 +102,46 @@ pub(super) fn paint(
             Style::default().fg(color).bg(palette.sidebar_bg),
         );
         hits.sync_status.height = 2;
+    }
+    if footer_rows(area) == 7 {
+        let start = area.bottom() - 7;
+        for index in 0..2 {
+            let y = start + index * 2;
+            let manager = view.managers.get(usize::from(index));
+            let color = match manager.map(|m| m.level) {
+                Some(Level::Good) => palette.green,
+                Some(Level::Warning) => palette.red,
+                _ => palette.yellow,
+            };
+            render::put_text(
+                buffer,
+                row.x,
+                y,
+                row.width,
+                manager
+                    .map(|m| m.name.as_str())
+                    .unwrap_or("Manager · waiting…"),
+                Style::default().fg(palette.text).bg(palette.sidebar_bg),
+            );
+            render::put_text(
+                buffer,
+                row.x,
+                y + 1,
+                row.width,
+                manager
+                    .map(|m| {
+                        if m.status.len() <= usize::from(row.width) {
+                            m.status.as_str()
+                        } else {
+                            m.compact.as_str()
+                        }
+                    })
+                    .unwrap_or("? Version unknown · auto ?"),
+                Style::default().fg(color).bg(palette.sidebar_bg),
+            );
+        }
+        hits.sync_status.y = start;
+        hits.sync_status.height = 6;
     }
 }
 
@@ -160,6 +202,60 @@ mod tests {
         assert_eq!(content_area(area).height, 7);
         assert_eq!(hits.sync_status.height, 1);
         assert_eq!(hits.sync_status.bottom(), area.bottom() - 1);
+    }
+    #[test]
+    fn both_managers_are_visible_above_summary_without_covering_version_or_content() {
+        let area = Rect::new(0, 0, 26, 30);
+        let mut buffer = Buffer::empty(area);
+        let mut hits = ShellHitMap::default();
+        let view = crate::client::sync_status::View {
+            managers: ["David’s Mac Studio", "David’s MacBook Pro"]
+                .into_iter()
+                .map(|name| crate::client::sync_status::ManagerRow {
+                    name: name.into(),
+                    status: "✓ v0.9.5 b3 · auto on".into(),
+                    compact: "b3 auto on".into(),
+                    level: crate::client::sync_status::Level::Good,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        paint(&mut buffer, area, &view, &Palette::catppuccin(), &mut hits);
+        let line = |y| {
+            (0..area.width - 1)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert!(line(23).starts_with("David’s Mac Studio"));
+        assert!(line(24).starts_with("✓ v0.9.5 b3 · auto on"));
+        assert!(line(25).starts_with("David’s MacBook Pro"));
+        assert!(line(26).starts_with("✓ v0.9.5 b3 · auto on"));
+        assert_eq!(content_area(area).bottom(), 23);
+        assert_eq!(hits.sync_status.y, 23);
+        assert_eq!(hits.sync_status.bottom(), 29);
+        assert!(line(29).starts_with(version_text(25)));
+    }
+    #[test]
+    fn narrow_cards_preserve_complete_build_number_and_auto_setting() {
+        let area = Rect::new(0, 0, 21, 30);
+        for auto in ["on", "off", "?"] {
+            let mut buffer = Buffer::empty(area);
+            let mut hits = ShellHitMap::default();
+            let mut view = crate::client::sync_status::View::default();
+            let compact = format!("b4294967295 auto {auto}");
+            view.managers.push(crate::client::sync_status::ManagerRow {
+                name: "Laptop".into(),
+                status: format!("? v0.9.5 b4294967295 · auto {auto}"),
+                compact: compact.clone(),
+                level: crate::client::sync_status::Level::Waiting,
+            });
+            paint(&mut buffer, area, &view, &Palette::catppuccin(), &mut hits);
+            let drawn: String = (0..area.width - 1)
+                .map(|x| buffer[(x, 24)].symbol())
+                .collect();
+            assert!(drawn.starts_with(&compact), "{drawn}");
+        }
+        assert_eq!(footer_rows(Rect::new(0, 0, 20, 30)), 3);
     }
     #[test]
     fn tiny_height_preserves_version_without_a_stale_sync_hit() {

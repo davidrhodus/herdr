@@ -2193,7 +2193,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
             state.sidebar_collapsed = sidebar_collapsed;
 
             for collapsed in [true, false] {
-                let frame = state.compose(100, 28).expect("three machine frame");
+                let frame = state.compose(100, 32).expect("three machine frame");
                 let machine = state
                     .hits
                     .machines
@@ -2235,7 +2235,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                 assert!(!state.collapsed_endpoints.contains(&other_id));
                 assert!(state.endpoint_error.is_none());
 
-                state.compose(100, 28).expect("toggled machine frame");
+                state.compose(100, 32).expect("toggled machine frame");
                 assert_eq!(
                     state
                         .hits

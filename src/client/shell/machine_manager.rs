@@ -188,7 +188,8 @@ impl ClientShellState {
             || self.sync_view.compact != view.compact
             || self.sync_view.level != view.level
             || self.sync_view.updates != view.updates
-            || self.sync_view.update_level != view.update_level;
+            || self.sync_view.update_level != view.update_level
+            || self.sync_view.managers != view.managers;
         if let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() {
             if matches!(manager.page, Page::Sync) && manager.sync != view.details {
                 let selected = menu_actions(manager).get(manager.selected).copied();

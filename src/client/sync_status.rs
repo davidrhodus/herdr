@@ -13,6 +13,13 @@ pub(crate) enum Level {
     Off,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagerRow {
+    pub name: String,
+    pub status: String,
+    pub compact: String,
+    pub level: Level,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct View {
     pub badge: String,
     pub compact: String,
@@ -20,6 +27,7 @@ pub(crate) struct View {
     pub details: String,
     pub updates: String,
     pub update_level: Level,
+    pub managers: Vec<ManagerRow>,
 }
 impl Default for View {
     fn default() -> Self {
@@ -30,6 +38,7 @@ impl Default for View {
             details: "Checking manager sync status…".into(),
             updates: "Updates: checking…".into(),
             update_level: Level::Waiting,
+            managers: Vec::new(),
         }
     }
 }
@@ -90,6 +99,7 @@ pub(crate) fn view() -> View {
     );
     view.updates = updates.badge;
     view.update_level = updates.level;
+    view.managers = updates.managers;
     view
 }
 pub(crate) fn remember_network(root: &Path, network: &super::machine_setup::tailscale::Network) {
