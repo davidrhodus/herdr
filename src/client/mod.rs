@@ -810,6 +810,10 @@ async fn run_client_loop(
             };
             if let Some(shell) = state.shell.as_mut() {
                 machine_repaint |= shell.receive_machine_event(event);
+                if let Some(command) = shell.take_next_machine_batch_command() {
+                    state.machine_setup.send(command);
+                    machine_repaint = true;
+                }
             }
         }
         if machine_repaint {

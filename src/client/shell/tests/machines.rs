@@ -756,6 +756,7 @@ fn tail_device(
     ip: &str,
 ) -> crate::client::machine_setup::TailscaleDevice {
     crate::client::machine_setup::TailscaleDevice {
+        id: None,
         name: name.into(),
         online,
         dns: dns.map(str::to_owned),
@@ -1513,7 +1514,7 @@ fn quick_add_rejects_stale_mouse_hits_after_a_device_list_refresh() {
         .hits
         .machine_actions
         .iter()
-        .find_map(|(_, h)| matches!(h, Hit::QuickDevice(..)).then_some(*h))
+        .find_map(|(_, h)| matches!(h, Hit::ToggleDevice(..)).then_some(*h))
         .unwrap();
     let refresh = refresh_tailnet(&mut state);
     let [ClientShellAction::MachineManager(Command::Tailscale { request, .. })] =
@@ -1532,5 +1533,397 @@ fn quick_add_rejects_stale_mouse_hits_after_a_device_list_refresh() {
     let outcome = press(&mut state, KeyCode::Enter);
     assert!(
         matches!(outcome.actions.as_slice(),[ClientShellAction::MachineManager(Command::Run{operation:Operation::Add(form),..})] if form.target=="100.90.0.3")
+    );
+}
+
+fn batch_devices() -> Vec<crate::client::machine_setup::TailscaleDevice> {
+    (1..=3)
+        .map(|n| {
+            let mut device = tail_device(
+                &format!("Build {n}"),
+                Some(true),
+                None,
+                &format!("100.90.0.{n}"),
+            );
+            device.id = Some(format!("node-{n}"));
+            device
+        })
+        .collect()
+}
+fn select_devices(
+    state: &mut ClientShellState,
+    devices: Vec<crate::client::machine_setup::TailscaleDevice>,
+) {
+    let (id, request) = quick_add(state);
+    assert!(state.receive_machine_event(Event::Tailscale {
+        id,
+        request,
+        result: Ok(devices.clone())
+    }));
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    let revision = manager.tailscale.revision;
+    for n in 0..devices.len() {
+        let mut outcome = ClientShellInput::default();
+        state.machine_action(Hit::ToggleDevice(n, revision), &mut outcome);
+        assert!(outcome.actions.is_empty());
+    }
+}
+fn run_id(outcome: &ClientShellInput) -> u64 {
+    let [ClientShellAction::MachineManager(Command::Run { id, .. })] = outcome.actions.as_slice()
+    else {
+        panic!("{:?}", outcome.actions)
+    };
+    *id
+}
+#[test]
+fn batch_selection_survives_search_refresh_and_rejects_replacement_node_at_same_address() {
+    let mut state = shell();
+    let devices = batch_devices();
+    select_devices(&mut state, devices.clone());
+    state.handle_raw_events(vec![RawInputEvent::Text(TextCommit::new(
+        "nothing matches",
+    ))]);
+    let refresh = refresh_tailnet(&mut state);
+    let [ClientShellAction::MachineManager(Command::Tailscale { id, request })] =
+        refresh.actions.as_slice()
+    else {
+        panic!()
+    };
+    let mut refreshed = devices;
+    refreshed.reverse();
+    refreshed[0].id = Some("replacement".into());
+    state.receive_machine_event(Event::Tailscale {
+        id: *id,
+        request: *request,
+        result: Ok(refreshed),
+    });
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(manager.tailscale.selected.len(), 3);
+    state.machine_action(Hit::AddSelected, &mut ClientShellInput::default());
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    let batch = manager.batch.as_ref().unwrap();
+    assert_eq!(batch.items[2].state.label(), "Skipped");
+    assert!(batch.items[2].detail.contains("Not online"));
+}
+#[test]
+fn batch_setup_runs_sequentially_continues_after_failure_and_retries_only_failed() {
+    let mut state = shell();
+    select_devices(&mut state, batch_devices());
+    let mut start = ClientShellInput::default();
+    state.machine_action(Hit::AddSelected, &mut start);
+    let first = run_id(&start);
+    assert!(state.take_next_machine_batch_command().is_none());
+    assert!(state.receive_machine_event(Event::Finished {
+        id: first,
+        success: true,
+        message: "Ready".into()
+    }));
+    let Some(Command::Run { id: second, .. }) = state.take_next_machine_batch_command() else {
+        panic!()
+    };
+    assert_ne!(first, second);
+    assert!(!state.receive_machine_event(Event::Finished {
+        id: first,
+        success: true,
+        message: "Duplicate".into()
+    }));
+    assert!(state.receive_machine_event(Event::Finished {
+        id: second,
+        success: false,
+        message: "Authentication failed".into()
+    }));
+    let Some(Command::Run { id: third, .. }) = state.take_next_machine_batch_command() else {
+        panic!()
+    };
+    assert!(state.receive_machine_event(Event::Finished {
+        id: third,
+        success: true,
+        message: "Ready".into()
+    }));
+    assert!(state.take_next_machine_batch_command().is_none());
+    assert!(!state.receive_machine_event(Event::Finished {
+        id: third,
+        success: false,
+        message: "Stale".into()
+    }));
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert!(matches!(manager.page, Page::BatchResults));
+    assert_eq!(
+        manager
+            .batch
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| i.state.label())
+            .collect::<Vec<_>>(),
+        ["Ready", "Failed", "Ready"]
+    );
+    let mut retry = ClientShellInput::default();
+    state.machine_action(Hit::RetryBatch, &mut retry);
+    assert!(
+        matches!(retry.actions.as_slice(),[ClientShellAction::MachineManager(Command::Run{operation:Operation::AddChecked(form),..})] if form.target=="100.90.0.2")
+    );
+    let id = run_id(&retry);
+    state.receive_machine_event(Event::Finished {
+        id,
+        success: true,
+        message: "Ready".into(),
+    });
+    assert!(state.take_next_machine_batch_command().is_none());
+}
+#[test]
+fn stopping_a_batch_during_approval_keeps_successes_and_never_launches_pending_servers() {
+    let mut state = shell();
+    select_devices(&mut state, batch_devices());
+    let mut start = ClientShellInput::default();
+    state.machine_action(Hit::AddSelected, &mut start);
+    state.receive_machine_event(Event::Finished {
+        id: run_id(&start),
+        success: true,
+        message: "Ready".into(),
+    });
+    let Some(Command::Run { id, .. }) = state.take_next_machine_batch_command() else {
+        panic!()
+    };
+    state.receive_machine_event(Event::Approval {
+        id,
+        prompt: crate::remote::setup_progress::Approval {
+            request: 1,
+            title: "Install".into(),
+            detail: "Install on Build 2?".into(),
+            restart: false,
+        },
+    });
+    let mut cancel = ClientShellInput::default();
+    state.machine_action(Hit::Back, &mut cancel);
+    assert!(cancel.actions.iter().any(|a|matches!(a,ClientShellAction::MachineManager(Command::Cancel{id:cancelled}) if *cancelled==id)));
+    assert!(!state.receive_machine_event(Event::Finished {
+        id,
+        success: true,
+        message: "Late".into()
+    }));
+    assert!(state.take_next_machine_batch_command().is_none());
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(
+        manager
+            .batch
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| i.state.label())
+            .collect::<Vec<_>>(),
+        ["Ready", "Stopped", "Stopped"]
+    );
+    let mut close = ClientShellInput::default();
+    state.machine_action(Hit::Close, &mut close);
+    assert!(state.overlay.is_none());
+    assert!(state.take_next_machine_batch_command().is_none());
+}
+#[test]
+fn batch_username_is_frozen_and_changed_saved_profile_is_not_retargeted() {
+    let mut state = shell();
+    let saved = SavedSshEndpoint::new("Saved build", "alice@100.90.0.2", "main").unwrap();
+    state.machine_profiles = vec![saved.clone()];
+    select_devices(&mut state, batch_devices());
+    let mut start = ClientShellInput::default();
+    state.machine_action(Hit::AddSelected, &mut start);
+    let first = run_id(&start);
+    if let Some(ClientShellOverlay::Machines(manager)) = &mut state.overlay {
+        manager.fields[5] = "bob".into();
+    }
+    state.machine_profiles[0].target = "alice@different-host".into();
+    state.receive_machine_event(Event::Finished {
+        id: first,
+        success: true,
+        message: "Ready".into(),
+    });
+    let Some(Command::Run {
+        operation: Operation::AddChecked(form),
+        ..
+    }) = state.take_next_machine_batch_command()
+    else {
+        panic!()
+    };
+    assert_eq!(form.target, "100.90.0.3");
+    assert_eq!(form.username, "alice");
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(
+        manager.batch.as_ref().unwrap().items[1].state.label(),
+        "Failed"
+    );
+}
+
+#[test]
+fn batch_keyboard_space_selects_without_connecting_and_selection_is_bounded() {
+    let mut state = shell();
+    let (id, request) = quick_add(&mut state);
+    let devices = (1..=33)
+        .map(|n| {
+            let mut d = tail_device(
+                &format!("Build {n}"),
+                Some(true),
+                None,
+                &format!("100.90.0.{n}"),
+            );
+            d.id = Some(format!("node-{n}"));
+            d
+        })
+        .collect();
+    state.receive_machine_event(Event::Tailscale {
+        id,
+        request,
+        result: Ok(devices),
+    });
+    assert!(state.handle_input_bytes(b" ").actions.is_empty());
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(manager.tailscale.selected.len(), 1);
+    let revision = manager.tailscale.revision;
+    for index in 1..33 {
+        state.machine_action(
+            Hit::ToggleDevice(index, revision),
+            &mut ClientShellInput::default(),
+        );
+    }
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(manager.tailscale.selected.len(), 32);
+    assert!(manager.error.as_ref().unwrap().contains("32"));
+}
+#[test]
+fn batch_results_do_not_interfere_with_a_later_single_server_setup() {
+    let mut state = shell();
+    let mut devices = batch_devices();
+    devices.truncate(1);
+    select_devices(&mut state, devices);
+    let mut start = ClientShellInput::default();
+    state.machine_action(Hit::AddSelected, &mut start);
+    state.receive_machine_event(Event::Finished {
+        id: run_id(&start),
+        success: true,
+        message: "Ready".into(),
+    });
+    let mut back = ClientShellInput::default();
+    state.machine_action(Hit::Back, &mut back);
+    if let Some(ClientShellOverlay::Machines(manager)) = &mut state.overlay {
+        manager.page = Page::Manage(profile("Another"));
+    }
+    let mut setup = ClientShellInput::default();
+    state.machine_action(Hit::Reconnect, &mut setup);
+    let id = run_id(&setup);
+    assert!(state.receive_machine_event(Event::Finished {
+        id,
+        success: true,
+        message: "Ready".into()
+    }));
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert!(matches!(manager.page, Page::Done));
+    assert!(manager.success);
+}
+
+#[test]
+fn successful_batch_reconnect_immediately_retries_endpoint_but_failure_or_changed_identity_does_not(
+) {
+    for (success, changed) in [(true, false), (false, false), (true, true)] {
+        let mut state = shell();
+        let saved = SavedSshEndpoint::new("Saved build", "alice@100.90.0.1", "main").unwrap();
+        state.set_endpoint_catalog(std::slice::from_ref(&saved));
+        state.set_endpoint_status(
+            &ClientEndpointId::Ssh(saved.id.clone()),
+            ClientEndpointStatus::Attention,
+        );
+        let mut devices = batch_devices();
+        devices.truncate(1);
+        select_devices(&mut state, devices);
+        let mut start = ClientShellInput::default();
+        state.machine_action(Hit::AddSelected, &mut start);
+        if changed {
+            state.machine_profiles[0].target = "alice@another-host".into();
+        }
+        state.receive_machine_event(Event::Finished {
+            id: run_id(&start),
+            success,
+            message: "Result".into(),
+        });
+        let retries = state.take_machine_retries();
+        if success && !changed {
+            assert_eq!(retries, vec![ClientEndpointId::Ssh(saved.id)]);
+        } else {
+            assert!(retries.is_empty());
+        }
+    }
+}
+#[test]
+fn batch_checkboxes_summary_and_retained_failure_output_are_visible() {
+    let mut state = shell();
+    let mut devices = batch_devices();
+    devices.truncate(1);
+    select_devices(&mut state, devices);
+    let text = state
+        .compose(100, 36)
+        .unwrap()
+        .cells
+        .iter()
+        .map(|c| c.symbol.as_str())
+        .collect::<String>();
+    assert!(text.contains("[x]"));
+    assert!(text.contains("Add selected (1)"));
+    let mut start = ClientShellInput::default();
+    state.machine_action(Hit::AddSelected, &mut start);
+    let id = run_id(&start);
+    let mut screen = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 5));
+    for (x, c) in "DENIED_BY_SSH".chars().enumerate() {
+        screen[(x as u16, 0)].set_symbol(&c.to_string());
+    }
+    state.receive_machine_event(Event::Screen {
+        id,
+        buffer: screen,
+        cursor: None,
+    });
+    state.receive_machine_event(Event::Finished {
+        id,
+        success: false,
+        message: "Setup failed".into(),
+    });
+    let text = state
+        .compose(100, 36)
+        .unwrap()
+        .cells
+        .iter()
+        .map(|c| c.symbol.as_str())
+        .collect::<String>();
+    assert!(text.contains("Failed · Build 1"));
+    assert!(text.contains("Retry failed / stopped"));
+    state.machine_action(Hit::BatchItem(0), &mut ClientShellInput::default());
+    let text = state
+        .compose(100, 36)
+        .unwrap()
+        .cells
+        .iter()
+        .map(|c| c.symbol.as_str())
+        .collect::<String>();
+    assert!(text.contains("DENIED_BY_SSH"));
+    assert!(press(&mut state, KeyCode::Char('x')).actions.is_empty());
+    press(&mut state, KeyCode::Esc);
+    assert!(
+        matches!(&state.overlay,Some(ClientShellOverlay::Machines(manager)) if matches!(manager.page,Page::BatchResults))
     );
 }

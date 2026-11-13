@@ -101,7 +101,9 @@ impl AddServer {
 #[derive(Clone, Debug)]
 pub(crate) enum Operation {
     Add(AddServer),
+    AddChecked(AddServer),
     Reconnect(String),
+    ReconnectChecked(crate::client::endpoint::SavedSshEndpoint),
     Update(String),
     SetupKey(String),
     EnableImports(crate::client::endpoint::SavedSshEndpoint),
@@ -404,7 +406,10 @@ fn run(commands: mpsc::Receiver<Command>, events: mpsc::SyncSender<Event>) {
 fn builder(operation: &Operation) -> Result<CommandBuilder, String> {
     let mut command = CommandBuilder::new(std::env::current_exe().map_err(|e| e.to_string())?);
     match operation {
-        Operation::Add(form) => {
+        Operation::Add(form) | Operation::AddChecked(form) => {
+            if matches!(operation, Operation::AddChecked(_)) {
+                command.env(crate::remote::device_identity::REUSE_EXISTING_ENV, "1");
+            }
             let target = form.destination()?;
             if !form.identity.trim().is_empty() {
                 let path = crate::remote::device_identity::absolute(form.identity.trim())?;
@@ -424,6 +429,13 @@ fn builder(operation: &Operation) -> Result<CommandBuilder, String> {
         }
         Operation::Reconnect(id) => {
             command.args(["machine", "reconnect", id]);
+        }
+        Operation::ReconnectChecked(profile) => {
+            command.args(["machine", "reconnect", profile.id.as_str()]);
+            command.env(
+                crate::remote::device_identity::EXPECTED_PROFILE_ENV,
+                serde_json::to_string(profile).map_err(|e| e.to_string())?,
+            );
         }
         Operation::Update(id) => {
             command.args(["machine", "update", id]);

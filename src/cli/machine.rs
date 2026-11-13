@@ -245,7 +245,35 @@ fn enable_imports(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
+fn validate_expected_profile(
+    profile: &crate::client::endpoint::SavedSshEndpoint,
+    raw: &str,
+) -> std::io::Result<()> {
+    if raw.len() > 16 * 1024 {
+        return Err(std::io::Error::other("Invalid captured server profile"));
+    }
+    let expected: crate::client::endpoint::SavedSshEndpoint =
+        serde_json::from_str(raw).map_err(std::io::Error::other)?;
+    if profile.id != expected.id
+        || profile.target != expected.target
+        || profile.session != expected.session
+        || !profile.enabled
+        || !expected.enabled
+    {
+        return Err(std::io::Error::other(
+            "Saved server changed while queued; select it again before connecting.",
+        ));
+    }
+    Ok(())
+}
 fn prepare_saved(args: &[String], action: &str) -> std::io::Result<i32> {
+    prepare_saved_with_expected(args, action, None)
+}
+fn prepare_saved_with_expected(
+    args: &[String],
+    action: &str,
+    expected: Option<&crate::client::endpoint::SavedSshEndpoint>,
+) -> std::io::Result<i32> {
     use std::io::IsTerminal;
     let [selector] = args else {
         eprintln!("usage: herdr machine {action} <label-or-id>");
@@ -259,6 +287,15 @@ fn prepare_saved(args: &[String], action: &str) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    if let Some(expected) = expected {
+        validate_expected_profile(
+            profile,
+            &serde_json::to_string(expected).map_err(std::io::Error::other)?,
+        )?;
+    }
+    if let Some(raw) = std::env::var_os(crate::remote::device_identity::EXPECTED_PROFILE_ENV) {
+        validate_expected_profile(profile, &raw.to_string_lossy())?;
+    }
     if !std::io::stdin().is_terminal() {
         eprintln!("{action} requires an interactive terminal; use herdr machine status for noninteractive checks");
         return Ok(2);
@@ -387,6 +424,23 @@ fn check_default_label(catalog: &EndpointCatalog, label: &str) -> Result<(), Str
     Ok(())
 }
 
+fn batch_reuse(
+    profiles: &[crate::client::endpoint::SavedSshEndpoint],
+    target: &str,
+    session: Option<&str>,
+) -> std::io::Result<Option<crate::client::endpoint::SavedSshEndpoint>> {
+    let matches: Vec<_> = profiles
+        .iter()
+        .filter(|p| p.target == target && session.is_none_or(|s| s == p.session))
+        .collect();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [profile] if profile.enabled => Ok(Some((*profile).clone())),
+        _ => Err(std::io::Error::other(
+            "This server already has disabled or multiple saved entries; choose it from Servers.",
+        )),
+    }
+}
 fn add(args: &[String]) -> std::io::Result<i32> {
     let AddArgs {
         target,
@@ -400,6 +454,17 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    if std::env::var_os(crate::remote::device_identity::REUSE_EXISTING_ENV).as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        if let Some(profile) = batch_reuse(&load_catalog()?.ssh, &target, session.as_deref())? {
+            return prepare_saved_with_expected(
+                &[profile.id.to_string()],
+                "reconnect",
+                Some(&profile),
+            );
+        }
+    }
     let identity = if setup_key {
         if !std::io::stdin().is_terminal() {
             return Err(std::io::Error::other(
@@ -718,6 +783,51 @@ fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn interrupted_batch_add_reuses_only_an_unambiguous_current_entry() {
+        let profile =
+            crate::client::endpoint::SavedSshEndpoint::new("Build", "alice@host", "main").unwrap();
+        assert_eq!(
+            batch_reuse(std::slice::from_ref(&profile), "alice@host", None)
+                .unwrap()
+                .unwrap()
+                .id,
+            profile.id
+        );
+        assert!(
+            batch_reuse(std::slice::from_ref(&profile), "bob@host", None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(batch_reuse(
+            std::slice::from_ref(&profile),
+            "alice@host",
+            Some("another")
+        )
+        .unwrap()
+        .is_none());
+        assert!(batch_reuse(&[profile.clone(), profile.clone()], "alice@host", None).is_err());
+        let mut disabled = profile;
+        disabled.enabled = false;
+        assert!(batch_reuse(&[disabled], "alice@host", None).is_err());
+    }
+    #[test]
+    fn queued_reconnect_checks_the_actual_saved_identity_before_authentication() {
+        let expected =
+            crate::client::endpoint::SavedSshEndpoint::new("Build", "alice@host", "main").unwrap();
+        let raw = serde_json::to_string(&expected).unwrap();
+        validate_expected_profile(&expected, &raw).unwrap();
+        for n in 0..4 {
+            let mut current = expected.clone();
+            match n {
+                0 => current.target = "alice@other-host".into(),
+                1 => current.session = "other".into(),
+                2 => current.enabled = false,
+                _ => current.id = crate::client::endpoint::ProfileId::generate(),
+            };
+            assert!(validate_expected_profile(&current, &raw).is_err());
+        }
+    }
     #[test]
     fn add_parser_preserves_values_across_argument_orders() {
         for (args, session) in [

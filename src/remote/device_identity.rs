@@ -1,4 +1,6 @@
 //! Per-computer identity paths. This file is never part of the synced catalog.
+pub(crate) const REUSE_EXISTING_ENV: &str = "HERDR_SETUP_REUSE_EXISTING";
+pub(crate) const EXPECTED_PROFILE_ENV: &str = "HERDR_SETUP_EXPECTED_PROFILE";
 use std::{collections::BTreeMap, io::Read, path::PathBuf};
 fn path() -> PathBuf {
     crate::config::state_dir().join("client/ssh-identities.json")

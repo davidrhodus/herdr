@@ -2,6 +2,7 @@
 use super::*;
 use crate::client::machine_setup::{self, AddServer, Command, Event, Operation};
 use crate::raw_input::RawInputEvent;
+pub(in crate::client::shell) mod batch;
 pub(in crate::client::shell) mod manager_sync;
 mod tailscale_browser;
 mod terminal_sessions;
@@ -32,6 +33,8 @@ pub(super) enum Page {
     Approval(crate::remote::setup_progress::Approval),
     Running,
     Done,
+    BatchResults,
+    BatchLog(usize),
 }
 #[derive(Debug)]
 pub(super) struct Manager {
@@ -42,6 +45,7 @@ pub(super) struct Manager {
     pub advanced: bool,
     pub setup_key: bool,
     pub quick_add: bool,
+    pub batch: Option<batch::Batch>,
     pub suggestions: Vec<String>,
     pub tailscale: tailscale_browser::Browser,
     pub sync: String,
@@ -80,6 +84,13 @@ pub(super) enum Hit {
     RefreshTailscale,
     TailscaleDevice(usize),
     QuickDevice(usize, u64),
+    ToggleDevice(usize, u64),
+    AddSelected,
+    ClearSelected,
+    RetryBatch,
+    BatchItem(usize),
+    BatchSummary,
+    BatchDetail(usize),
     TailscaleSearch,
     ManualEntry,
     Field(usize),
@@ -123,6 +134,7 @@ impl Manager {
             advanced: false,
             setup_key: true,
             quick_add: false,
+            batch: None,
             suggestions: Vec::new(),
             tailscale: Default::default(),
             sync: "Checking shared-list status…".into(),
@@ -146,6 +158,7 @@ impl Manager {
     fn start_quick_add(&mut self, outcome: &mut ClientShellInput) {
         self.page = Page::Tailscale { join: false };
         self.quick_add = true;
+        self.batch = None;
         self.fields = std::array::from_fn(|_| TextEditor::default());
         self.fields[5] = tailscale_browser::suggested_username(&self.profiles)
             .as_str()
@@ -315,6 +328,9 @@ impl ClientShellState {
         let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() else {
             return;
         };
+        if manager.batch.as_ref().is_some_and(|b| b.active.is_none()) {
+            manager.batch = None;
+        }
         manager.id = machine_setup::next_id();
         manager.tailscale.loading = false;
         manager.last_operation = Some(operation.clone());
@@ -445,7 +461,10 @@ impl ClientShellState {
                 manager.selected = 0;
             }
             Event::Phase { id, phase } if id == manager.id => {
-                manager.status = phase.label().into();
+                manager.status = manager
+                    .batch
+                    .as_ref()
+                    .map_or_else(|| phase.label().into(), |b| b.status(phase.label()));
                 if matches!(manager.page, Page::Approval(_)) {
                     manager.page = Page::Running;
                 }
@@ -463,7 +482,50 @@ impl ClientShellState {
                 id,
                 success,
                 message,
-            } if id == manager.id => {
+            } if id == manager.id && manager.batch.as_ref().is_some_and(|b| b.active.is_some()) => {
+                let retry = if success {
+                    manager
+                        .batch
+                        .as_ref()
+                        .and_then(|b| b.active.and_then(|n| b.items[n].expected.as_ref()))
+                        .filter(|p| {
+                            self.machine_profiles.iter().any(|current| {
+                                current.id == p.id
+                                    && current.target == p.target
+                                    && current.session == p.session
+                                    && current.enabled
+                            })
+                        })
+                        .map(|p| p.id.clone())
+                } else {
+                    None
+                };
+                if let Some(batch) = manager.batch.as_mut() {
+                    batch.finish(
+                        success,
+                        message,
+                        if success {
+                            None
+                        } else {
+                            manager
+                                .screen
+                                .as_ref()
+                                .filter(|s| s.area.width <= 160 && s.area.height <= 60)
+                                .cloned()
+                        },
+                    );
+                }
+                manager.page = Page::BatchResults;
+                manager.error = None;
+                if let Some(profile) = retry {
+                    self.retry_machine(&ClientEndpointId::Ssh(profile));
+                }
+            }
+            Event::Finished {
+                id,
+                success,
+                message,
+            } if id == manager.id && manager.batch.is_none() => {
                 manager.page = Page::Done;
                 manager.success = success;
                 manager.error = Some(message);
@@ -517,7 +579,7 @@ impl ClientShellState {
                     self.overlay=None;outcome.repaint=true;return;
                 } else {manager.error=Some("Server entry changed; open the import workspace on the original server.".into());}
             },
-            Hit::Hint => {},
+            Hit::Hint | Hit::BatchSummary | Hit::BatchDetail(_) => {},
             Hit::ManagerSync => {manager.page=Page::Managers;manager.error=manager.direct.error.clone();outcome.actions.push(ClientShellAction::MachineManager(Command::Direct {id:manager.id,action:crate::client::direct_sync::Action::Discover}));},
             Hit::FindManagers|Hit::SyncManagers => {let action=if hit==Hit::FindManagers{crate::client::direct_sync::Action::Discover}else{crate::client::direct_sync::Action::SyncNow};outcome.actions.push(ClientShellAction::MachineManager(Command::Direct{id:manager.id,action}));},
             Hit::PairManager(_)|Hit::ApprovePair(_)|Hit::ConfirmPair|Hit::ForgetManager(_)|Hit::StopManagers => if let Some((action,text))=manager_sync::consent(&manager,hit){manager.page=Page::DirectConfirm{action,text};},
@@ -530,6 +592,15 @@ impl ClientShellState {
             Hit::RefreshTailscale => if matches!(manager.page,Page::Tailscale{..}) {
                 if let Some(action)=manager.tailscale.refresh(manager.id) {outcome.actions.push(action);}
             },
+            Hit::ToggleDevice(index,revision) => if manager.quick_add && matches!(manager.page,Page::Tailscale{join:false}) {
+                if let Err(error)=manager.tailscale.toggle(index,revision) {manager.error=Some(error);} else {manager.error=None;}
+            },
+            Hit::AddSelected => if manager.quick_add && matches!(manager.page,Page::Tailscale{join:false}) {
+                match batch::Batch::plan(&manager) {Ok(batch)=>{manager.batch=Some(batch);manager.page=Page::BatchResults;manager.error=None;},Err(error)=>manager.error=Some(error)}
+            },
+            Hit::ClearSelected => {manager.tailscale.selected.clear();manager.error=None;},
+            Hit::RetryBatch => if matches!(manager.page,Page::BatchResults) {if let Some(batch)=manager.batch.as_mut(){batch.retry();manager.error=None;}},
+            Hit::BatchItem(index) => if matches!(manager.page,Page::BatchResults) && manager.batch.as_ref().and_then(|b|b.items.get(index)).is_some_and(|i|i.screen.is_some()){manager.page=Page::BatchLog(index);},
             Hit::TailscaleSearch => { manager.focus=0; },
             Hit::ManualEntry => if matches!(manager.page,Page::Tailscale{join:false}) {manager.quick_add=false;manager.tailscale.loading=false;manager.tailscale.request=machine_setup::next_id();manager.page=Page::Add;manager.focus=0;manager.error=None;outcome.actions.push(ClientShellAction::MachineManager(Command::Discover{id:manager.id}));},
             Hit::TailscaleDevice(index) | Hit::QuickDevice(index,_) => if let Page::Tailscale{join}=manager.page {
@@ -553,15 +624,17 @@ impl ClientShellState {
                 }
             },
             Hit::Close => {
+                if let Some(batch)=manager.batch.as_mut(){batch.stop();}
                 outcome.actions.push(ClientShellAction::MachineManager(Command::Cancel { id: manager.id }));
                 outcome.repaint = true;
                 return;
             }
             Hit::Back => {
+                let batch_page=if matches!(manager.page,Page::BatchLog(_)) {true} else if let Some(batch)=manager.batch.as_mut().filter(|b|!b.done){batch.stop();true}else{false};
                 manager.tailscale.loading=false;
                 outcome.actions.push(ClientShellAction::MachineManager(Command::Cancel { id: manager.id }));
                 manager.id = machine_setup::next_id();
-                manager.page = if matches!(manager.page,Page::DirectConfirm{..}) {Page::Managers}
+                manager.page = if batch_page {Page::BatchResults} else if matches!(manager.page,Page::DirectConfirm{..}) {Page::Managers}
                 else if let Page::Tailscale { join } = manager.page { if join { Page::Join } else if manager.quick_add { Page::Servers } else { Page::Add } }
                 else if matches!(manager.page, Page::Running | Page::Approval(_))
                     || matches!(manager.page, Page::Done) && !manager.success {
@@ -669,7 +742,46 @@ impl ClientShellState {
         if let Some(operation) = operation {
             self.run_machine(operation, outcome);
         }
+        if matches!(hit, Hit::AddSelected | Hit::RetryBatch) {
+            if let Some(command) = self.take_next_machine_batch_command() {
+                outcome
+                    .actions
+                    .push(ClientShellAction::MachineManager(command));
+            }
+        }
         outcome.repaint = true;
+    }
+    pub(crate) fn take_next_machine_batch_command(&mut self) -> Option<Command> {
+        let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() else {
+            return None;
+        };
+        let batch = manager.batch.as_mut()?;
+        if !batch.ready() {
+            return None;
+        }
+        let Some(operation) = batch.next(&self.machine_profiles) else {
+            manager.page = Page::BatchResults;
+            return None;
+        };
+        let mut outcome = ClientShellInput::default();
+        self.run_machine(operation, &mut outcome);
+        if let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() {
+            if let Some(batch) = manager.batch.as_mut() {
+                if matches!(manager.page, Page::Running) {
+                    manager.status = batch.status("Working…");
+                } else {
+                    batch.stop();
+                    manager.page = Page::BatchResults;
+                }
+            }
+        }
+        outcome.actions.into_iter().find_map(|a| {
+            if let ClientShellAction::MachineManager(command) = a {
+                Some(command)
+            } else {
+                None
+            }
+        })
     }
     pub(super) fn handle_machine_raw(
         &mut self,
@@ -747,12 +859,39 @@ impl ClientShellState {
                     return true;
                 }
                 if key.code == KeyCode::Esc {
-                    let hit = if matches!(manager.page, Page::Tailscale { .. }) {
+                    let hit = if matches!(manager.page, Page::Tailscale { .. } | Page::BatchLog(_))
+                    {
                         Hit::Back
                     } else {
                         Hit::Close
                     };
                     self.machine_action(hit, outcome);
+                    return true;
+                }
+                if manager.quick_add
+                    && matches!(manager.page, Page::Tailscale { join: false })
+                    && manager.focus != 5
+                    && key.code == KeyCode::Char(' ')
+                    && key.modifiers.is_empty()
+                {
+                    if let Some(index) = manager
+                        .tailscale
+                        .matching_indices()
+                        .get(manager.selected)
+                        .copied()
+                    {
+                        let revision = manager.tailscale.revision;
+                        self.machine_action(Hit::ToggleDevice(index, revision), outcome);
+                    }
+                    return true;
+                }
+                if manager.quick_add
+                    && matches!(manager.page, Page::Tailscale { join: false })
+                    && manager.focus != 5
+                    && key.code == KeyCode::Enter
+                    && !manager.tailscale.selected.is_empty()
+                {
+                    self.machine_action(Hit::AddSelected, outcome);
                     return true;
                 }
                 if manager.quick_add
@@ -852,6 +991,10 @@ impl ClientShellState {
                         }
                         KeyCode::Char('a') if matches!(manager.page, Page::Servers) => {
                             self.machine_action(Hit::Add, outcome);
+                            return true;
+                        }
+                        KeyCode::Char('r') if matches!(manager.page, Page::BatchResults) => {
+                            self.machine_action(Hit::RetryBatch, outcome);
                             return true;
                         }
                         KeyCode::Char('r') if matches!(manager.page, Page::Sync) => {
@@ -1017,9 +1160,28 @@ pub(super) fn menu_actions(manager: &Manager) -> Vec<Hit> {
                     Hit::TailscaleDevice(index)
                 }
             })
+            .chain(manager.quick_add.then_some(Hit::AddSelected))
+            .chain(
+                (manager.quick_add && !manager.tailscale.selected.is_empty())
+                    .then_some(Hit::ClearSelected),
+            )
             .chain(std::iter::once(Hit::RefreshTailscale))
             .chain(manager.quick_add.then_some(Hit::ManualEntry))
             .collect(),
+        Page::BatchResults => manager
+            .batch
+            .as_ref()
+            .map(|b| {
+                std::iter::once(Hit::BatchSummary)
+                    .chain(b.items.iter().enumerate().flat_map(|(index, item)| {
+                        std::iter::once(Hit::BatchItem(index))
+                            .chain((!item.detail.is_empty()).then_some(Hit::BatchDetail(index)))
+                    }))
+                    .chain([Hit::RetryBatch, Hit::Add])
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Page::BatchLog(_) => vec![Hit::Back],
         Page::Servers => [
             vec![Hit::Add, Hit::Sync],
             (0..manager.profiles.len()).map(Hit::Server).collect(),
@@ -1123,6 +1285,8 @@ pub(super) fn render(
         Page::Join => "Join a shared server list",
         Page::Confirm { .. } => "Confirm",
         Page::Approval(prompt) => &prompt.title,
+        Page::BatchResults => "Server setup results",
+        Page::BatchLog(_) => "Server setup output",
         Page::Running => "Connect and set up server",
         Page::Done => {
             if manager.success {
@@ -1346,6 +1510,28 @@ pub(super) fn render(
                     );
                 }
             }
+            Page::BatchResults => {
+                if let Some(batch) = &manager.batch {
+                    row(&batch.summary(), Hit::BatchSummary, false);
+                    for (index, item) in batch.items.iter().enumerate() {
+                        row(
+                            &format!("{} · {}", item.state.label(), item.device.name),
+                            Hit::BatchItem(index),
+                            false,
+                        );
+                        if !item.detail.is_empty() {
+                            row(
+                                &format!("  {}", item.detail),
+                                Hit::BatchDetail(index),
+                                false,
+                            );
+                        }
+                    }
+                    row("Retry failed / stopped servers", Hit::RetryBatch, false);
+                    row("Add more servers…", Hit::Add, false);
+                }
+            }
+            Page::BatchLog(_) => {}
             Page::Sync => {
                 row(
                     "Pair another manager over Tailscale…",
@@ -1487,10 +1673,17 @@ pub(super) fn render(
             });
         }
     }
-    if matches!(manager.page, Page::Running)
+    if matches!(manager.page, Page::Running | Page::BatchLog(_))
         || matches!(manager.page, Page::Done) && !manager.success
     {
-        if let Some(screen) = &manager.screen {
+        if let Some(screen) = match manager.page {
+            Page::BatchLog(index) => manager
+                .batch
+                .as_ref()
+                .and_then(|b| b.items.get(index))
+                .and_then(|i| i.screen.as_ref()),
+            _ => manager.screen.as_ref(),
+        } {
             let view = Rect::new(
                 inner.x,
                 inner.y + 2,
@@ -1504,6 +1697,7 @@ pub(super) fn render(
             }
             cursor = manager
                 .cursor
+                .filter(|_| !matches!(manager.page, Page::BatchLog(_)))
                 .filter(|(x, y)| *x < view.width && *y < view.height)
                 .map(|(x, y)| crate::protocol::CursorState {
                     x: view.x + x,
@@ -1579,7 +1773,7 @@ pub(super) fn render(
             "[ Cancel ]"
         } else if matches!(
             manager.page,
-            Page::Tailscale { .. } | Page::DirectConfirm { .. }
+            Page::Tailscale { .. } | Page::DirectConfirm { .. } | Page::BatchLog(_)
         ) {
             "[ Back ]"
         } else {

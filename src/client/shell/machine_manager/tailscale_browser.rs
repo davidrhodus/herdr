@@ -10,6 +10,7 @@ pub(in crate::client::shell) struct Browser {
     pub devices: Vec<TailscaleDevice>,
     pub error: Option<String>,
     pub query: TextEditor,
+    pub selected: std::collections::BTreeMap<String, TailscaleDevice>,
 }
 impl Browser {
     pub fn matching_indices(&self) -> Vec<usize> {
@@ -31,6 +32,25 @@ impl Browser {
             .collect()
     }
 
+    pub fn toggle(&mut self, index: usize, revision: u64) -> Result<(), String> {
+        if self.loading || revision != self.revision || !self.matching_indices().contains(&index) {
+            return Ok(());
+        }
+        let Some(device) = self.devices.get(index) else {
+            return Ok(());
+        };
+        let key = device_key(device).ok_or("Device has no usable identity")?;
+        if self.selected.remove(&key).is_none() {
+            if self.selected.len() >= super::batch::LIMIT {
+                return Err(format!(
+                    "Select at most {} servers per batch.",
+                    super::batch::LIMIT
+                ));
+            }
+            self.selected.insert(key, device.clone());
+        }
+        Ok(())
+    }
     pub fn refresh(&mut self, id: u64) -> Option<ClientShellAction> {
         if self.loading {
             return None;
@@ -45,6 +65,18 @@ impl Browser {
     }
 }
 
+pub(super) fn device_key(device: &TailscaleDevice) -> Option<String> {
+    if let Some(id) = &device.id {
+        return Some(format!("node:{id}"));
+    }
+    // Older status providers: require the entire locator snapshot to match.
+    // A refresh may never silently transfer a selection to another device.
+    let mut ips = device.ips.clone();
+    ips.sort();
+    device
+        .target()
+        .map(|_| format!("legacy:{:?}:{:?}:{ips:?}", device.name, device.dns))
+}
 pub(super) fn render(
     buffer: &mut Buffer,
     inner: Rect,
@@ -63,7 +95,7 @@ pub(super) fn render(
         inner.y + 1,
         inner.width,
         if manager.quick_add {
-            "Online devices · Type to search · Select to add · Tab edits username"
+            "Click/Space selects · Enter adds selected · Type searches · Tab edits user"
         } else {
             "Online devices only · Type to search · ↑/↓ select · Enter fills form"
         },
@@ -126,7 +158,16 @@ pub(super) fn render(
     let summary = if browser.loading {
         "Refreshing online devices…".into()
     } else {
-        format!("{} matching · {} online", matches.len(), online)
+        if manager.quick_add {
+            format!(
+                "{} selected · {} matching · {} online",
+                browser.selected.len(),
+                matches.len(),
+                online
+            )
+        } else {
+            format!("{} matching · {} online", matches.len(), online)
+        }
     };
     put_text(
         buffer,
@@ -137,7 +178,9 @@ pub(super) fn render(
         normal,
     );
     let mut top = inner.y + if manager.quick_add { 7 } else { 5 };
-    let bottom = inner.bottom().saturating_sub(3);
+    let bottom = inner
+        .bottom()
+        .saturating_sub(if manager.quick_add { 4 } else { 3 });
     if let Some(error) = &browser.error {
         if browser.devices.is_empty() {
             Paragraph::new(error.as_str())
@@ -204,11 +247,23 @@ pub(super) fn render(
         buffer.set_style(rect, style);
         let status = "online";
         let status_width = status.len() as u16;
+        let prefix = if manager.quick_add { 4 } else { 0 };
+        if manager.quick_add {
+            let checked = device_key(device).is_some_and(|key| browser.selected.contains_key(&key));
+            put_text(
+                buffer,
+                inner.x,
+                y,
+                3,
+                if checked { "[x]" } else { "[ ]" },
+                style,
+            );
+        }
         put_text(
             buffer,
-            inner.x,
+            inner.x + prefix,
             y,
-            inner.width.saturating_sub(status_width + 1),
+            inner.width.saturating_sub(status_width + 1 + prefix),
             &device.name,
             style,
         );
@@ -250,12 +305,40 @@ pub(super) fn render(
         hits.push((
             rect,
             if manager.quick_add {
-                Hit::QuickDevice(index, browser.revision)
+                Hit::ToggleDevice(index, browser.revision)
             } else {
                 Hit::TailscaleDevice(index)
             },
         ));
         y = y.saturating_add(rows + 1);
+    }
+    if manager.quick_add {
+        let action = Rect::new(inner.x, inner.bottom() - 3, inner.width.min(23), 1);
+        put_text(
+            buffer,
+            action.x,
+            action.y,
+            action.width,
+            &format!("[ Add selected ({}) ]", browser.selected.len()),
+            if browser.selected.is_empty() || browser.loading {
+                muted
+            } else {
+                normal.fg(palette.accent)
+            },
+        );
+        hits.push((action, Hit::AddSelected));
+        if !browser.selected.is_empty() && inner.width >= 34 {
+            let clear = Rect::new(inner.x + 24, inner.bottom() - 3, inner.width - 24, 1);
+            put_text(
+                buffer,
+                clear.x,
+                clear.y,
+                clear.width,
+                "[ Clear selection ]",
+                normal,
+            );
+            hits.push((clear, Hit::ClearSelected));
+        }
     }
     let refresh = Rect::new(
         inner.x,
@@ -376,6 +459,7 @@ mod tests {
             SavedSshEndpoint::new("Bob", "bob@build.tailnet.ts.net", "main").unwrap(),
         ];
         let device = TailscaleDevice {
+            id: None,
             name: "Build".into(),
             dns: Some("build.tailnet.ts.net".into()),
             ips: vec![

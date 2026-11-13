@@ -8,6 +8,7 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Device {
+    pub id: Option<String>,
     pub name: String,
     pub dns: Option<String>,
     pub ips: Vec<IpAddr>,
@@ -89,6 +90,10 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Vec<Device>, String> {
                 name
             };
             Some(Device {
+                id: peer["ID"]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control))
+                    .map(str::to_owned),
                 name,
                 dns,
                 ips,
@@ -231,6 +236,11 @@ pub(crate) fn network() -> Result<Network, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn device_discovery_preserves_stable_node_ids_for_multi_selection() {
+        let devices=parse(br#"{"BackendState":"Running","Peer":{"key":{"ID":"node-stable","HostName":"build","TailscaleIPs":["100.90.0.1"],"Online":true}}}"#).unwrap();
+        assert_eq!(devices[0].id.as_deref(), Some("node-stable"));
+    }
     #[test]
     fn sorts_online_first_preserves_both_ip_families_and_prefers_dns() {
         let devices=parse(&serde_json::to_vec(&serde_json::json!({"BackendState":"Running","Peer":{

@@ -610,3 +610,20 @@ profile instead of adding a duplicate. If several saved sessions match, choose
 the desired saved server. **Manual / advanced** remains available for other
 addresses, ports, keys, and session settings. Browsing devices does not connect
 to or install anything until you select one.
+
+To add several devices, click their checkboxes or move with ↑/↓ and press
+Space, then choose **Add selected** (or press Enter on a device row). Search and
+Refresh preserve selections by Tailscale device ID. Up to 32 devices can be
+queued; a selected device that disappears or is replaced is skipped.
+
+Herdr sets up one server at a time, showing the current server and progress.
+The Username field is captured for the batch; each server uses its own SSH
+authentication and installation approvals. Passwords are neither retained nor
+replayed across servers. A failure does not stop the remaining servers.
+
+The results screen lists every outcome. Choose a failed server to inspect its
+retained setup output, or **Retry failed / stopped servers** to retry only those
+entries. Up to eight bounded failure screens are kept in memory for this dialog.
+Cancel stops the current setup and remaining queue; completed servers stay
+saved and running. Closing the dialog discards the queue. Changed or ambiguous
+saved profiles require review instead of silently connecting elsewhere.
