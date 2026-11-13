@@ -7,6 +7,22 @@ use std::process::{Command, Stdio};
 use std::ptr::NonNull;
 use std::sync::OnceLock;
 
+pub(crate) fn cloud_aws_program() -> PathBuf {
+    if std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|p| p.join("aws").is_file()))
+    {
+        return PathBuf::from("aws");
+    }
+    ["/usr/local/bin/aws", "/opt/homebrew/bin/aws"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("aws"))
+}
+pub(crate) fn cloud_aws_install_url() -> &'static str {
+    "https://awscli.amazonaws.com/AWSCLIV2.pkg"
+}
+
 pub(super) const REMOTE_BRIDGE_CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
 
 use super::{

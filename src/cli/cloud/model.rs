@@ -36,6 +36,22 @@ pub(super) struct Settings {
     pub oauth_client: String,
     pub tailnet: String,
     pub tag: String,
+    #[serde(default)]
+    pub enrollment: Option<Enrollment>,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) enum Enrollment {
+    Browser,
+    OAuth,
+}
+impl Settings {
+    pub fn enrollment_mode(&self) -> Enrollment {
+        self.enrollment.unwrap_or(if self.oauth_client.is_empty() {
+            Enrollment::Browser
+        } else {
+            Enrollment::OAuth
+        })
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +74,19 @@ pub(super) struct Job {
     pub deleted: bool,
     #[serde(default)]
     pub pending_action: Option<Lifecycle>,
+    #[serde(default)]
+    pub expected_tailnet: Option<String>,
+    #[serde(default)]
+    pub reauth_nonce: Option<String>,
+    #[serde(default)]
+    pub pending_enrollment_repair: Option<EnrollmentRepair>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct EnrollmentRepair {
+    pub nonce: String,
+    pub parent_script: String,
+    pub guest_script: Option<String>,
+    pub parent_updated: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Lifecycle {

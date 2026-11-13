@@ -8,6 +8,9 @@ use std::{
 };
 
 pub(super) fn enrollment(settings: &Settings) -> io::Result<String> {
+    if settings.enrollment_mode() == Enrollment::Browser {
+        return Ok(String::new());
+    }
     token(&settings.oauth_client)?;
     if settings.tailnet != "-" {
         token(&settings.tailnet)?;
@@ -76,8 +79,9 @@ pub(super) fn script(id: &str, public: &str, auth: &str, hostname: &str) -> io::
     token(id)?;
     token(hostname)?;
     validate_public(public)?;
-    if !auth.starts_with("tskey-auth-")
-        || !auth.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    if !auth.is_empty()
+        && (!auth.starts_with("tskey-auth-")
+            || !auth.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
     {
         return Err(error("Invalid Tailscale enrollment key"));
     }
@@ -85,9 +89,22 @@ pub(super) fn script(id: &str, public: &str, auth: &str, hostname: &str) -> io::
         .replace("@JOB@", id)
         .replace("@PUBLIC@", public)
         .replace("@AUTH@", auth)
+        .replace("@REAUTH@", "")
         .replace("@HOSTNAME@", hostname);
     Ok(script)
 }
+pub(super) fn repair_script(
+    id: &str,
+    public: &str,
+    auth: &str,
+    hostname: &str,
+    nonce: &str,
+) -> io::Result<String> {
+    token(nonce)?;
+    let script = script(id, public, auth, hostname)?;
+    Ok(script.replacen("# HERDR-REAUTH \n", &format!("# HERDR-REAUTH {nonce}\n"), 1))
+}
+
 #[derive(Debug, PartialEq)]
 pub(super) struct Proof {
     pub node: String,
@@ -139,10 +156,29 @@ pub(super) fn wait_proof(job: &Job) -> io::Result<Proof> {
 }
 pub(super) fn wait_proof_for(job: &Job, identity: &str) -> io::Result<Proof> {
     let start = Instant::now();
+    let mut last_url = None;
     while start.elapsed() < Duration::from_secs(900) {
-        if let Ok(console) = super::provider::console(job) {
-            if let Some(proof) = proof(&console, identity)? {
-                let status = json(&crate::client::tailscale::status_bytes().map_err(error)?)?;
+        let status = super::tailscale_setup::status()?;
+        super::tailscale_setup::check(job, &status)?;
+        if let Ok(raw_console) = super::provider::console(job) {
+            let console = super::tailscale_setup::current_console(job, &raw_console, identity);
+            let Some(console) = console else {
+                std::thread::sleep(Duration::from_secs(5));
+                continue;
+            };
+            super::tailscale_setup::check_remote(job, console, identity)?;
+            if let Some(url) = super::tailscale_setup::login_url(console, identity) {
+                if last_url.as_ref() != Some(&url) {
+                    println!("Approve this server in your Tailscale network: {url}");
+                    if super::tailscale_setup::should_open(job, identity, &url)?
+                        && crate::platform::open_url(&url).is_err()
+                    {
+                        println!("Open the approval link above in your browser.");
+                    }
+                    last_url = Some(url);
+                }
+            }
+            if let Some(proof) = proof(console, identity)? {
                 if status["Peer"].as_object().is_some_and(|peers| {
                     peers.values().any(|p| {
                         p["Online"] == true
@@ -159,9 +195,12 @@ pub(super) fn wait_proof_for(job: &Job, identity: &str) -> io::Result<Proof> {
         }
         std::thread::sleep(Duration::from_secs(5));
     }
-    Err(error("Bootstrap is not ready. Check outbound internet, Tailscale tag approval and SSH policy. Resume this retained job when ready; it will not create another VM."))
+    Err(error("Bootstrap is not ready. Finish browser approval in the correct Tailscale network, check outbound internet and any device approval policy, or use repair-enrollment. Resume this retained job when ready; it will not create another VM."))
 }
 pub(super) fn connect(job: &mut Job, proof: Proof) -> io::Result<()> {
+    if job.expected_tailnet.is_some() {
+        super::tailscale_setup::check(job, &super::tailscale_setup::status()?)?;
+    }
     let target = trust(job, &proof)?;
     job.target = Some(target.clone());
     job.phase("Installing and checking the Rust terminal server")?;
@@ -236,5 +275,19 @@ mod tests {
         assert!(!s.contains("client_secret"));
         assert!(!s.contains("set -x"));
         assert!(script("job", KEY, "tskey-auth-$(evil)", "host").is_err());
+    }
+    #[test]
+    fn browser_mode_needs_no_oauth_and_repair_changes_only_the_nonce_marker() {
+        let settings = Settings::default();
+        assert_eq!(settings.enrollment_mode(), Enrollment::Browser);
+        assert!(enrollment(&settings).unwrap().is_empty());
+        let normal = script("job", KEY, "", "host").unwrap();
+        assert!(normal.contains("--timeout=10s"));
+        assert!(normal.contains("HERDR-LOGIN job"));
+        let repair = repair_script("job", KEY, "", "host", "fresh-nonce").unwrap();
+        assert!(repair.contains("# HERDR-REAUTH fresh-nonce\n"));
+        assert!(repair.contains(r"s/^# HERDR-REAUTH \("));
+        assert!(repair.contains("tailscale logout"));
+        assert!(!normal.contains("fresh-nonce"));
     }
 }

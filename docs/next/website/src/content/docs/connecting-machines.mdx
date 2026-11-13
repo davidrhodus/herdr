@@ -643,18 +643,33 @@ browser. The panel runs inside Herdr's existing setup terminal. Choose a numbere
 option and press Return; Ctrl+G closes it. No separate shell is needed for normal
 account setup or instance actions.
 
-Configure AWS accounts/profiles and regions, or Google accounts/configurations,
-projects and zones in this panel. The official AWS CLI v2 or Google Cloud CLI
-must be installed on the manager computer; account configuration can launch
-provider sign-in inside the panel. Accounts and provisioning jobs are local to
-that computer. Provider credentials and SSH private keys are never synced.
+Choose **Create AWS EC2** to start: missing account setup is handled inline, then
+Herdr continues the same server request. It discovers local AWS CLI profiles and
+reuses valid sign-ins. **N — Sign in to AWS in browser** uses your ordinary AWS
+console login through AWS CLI 2.32 or newer; no access-key entry or SSO start URL
+is needed for this path. Identity Center users can select SSO/advanced setup.
+Expired saved sign-ins are renewed in the panel and checked against the saved
+account identity. Herdr fills in the image and instance size, remembers your
+network choices, and shows them before any instance is created.
 
-Configure Tailscale once with an OAuth client authorized for `auth_keys` write
-and the chosen server tag. Enter its secret in the hidden input in Herdr. It is
-stored in a private local file; the VM receives a single-use, 24-hour enrollment
-key. Tailnet policy must permit the manager to reach tagged servers on SSH.
-The provider retains user data/startup metadata, including this short-lived key;
-Herdr never places the long-lived OAuth secret there.
+If AWS CLI is missing, the panel offers the official installation page and lets
+you retry after installing it. **U — Install / update AWS CLI** is also available.
+Google Cloud still uses its named configuration and project setup. Accounts and
+provisioning jobs are local to that computer. Provider credentials and SSH
+private keys are never synced.
+
+**Tailscale browser approval is the default**; no OAuth client, auth key or tag is
+required. Herdr detects the manager's connected tailnet before creating resources.
+When the VM requests enrollment, Herdr opens its verified Tailscale approval link.
+Approve it into the displayed network; installation continues when the verified
+node is reachable. Nitro creates a parent and guest, each needing approval.
+Tailnet policy and any device-approval requirements still apply.
+
+**7 — Configure Tailscale enrollment** selects browser approval or advanced OAuth
+for unattended enrollment. Existing OAuth settings keep working. In OAuth mode,
+the secret stays in a private local file and VMs receive single-use 24-hour keys.
+The provider retains bootstrap metadata and short-lived enrollment data; it never
+receives the long-lived OAuth secret.
 
 Choose **Create AWS EC2**, **Create AWS Nitro Sandbox**, or **Create Google Cloud**.
 Review the account, location, image, size and network, then type `CREATE`.
@@ -692,9 +707,13 @@ other managers need their own authorized SSH key and host trust.
 request across failures. Resume reconciles an existing resource before retrying
 an uncertain create; retries use the original idempotency token within a bounded
 window. It refuses to replay an unknown create after that window expires.
-**repair-enrollment** refreshes an expired first-boot key for a job that has never
-become Ready. It stops/restarts an EC2 parent and can repair a Nitro guest's
-bootstrap disk. **Start**, **Stop**, and **Delete** require explicit review.
+**repair-enrollment** requests fresh browser approval or refreshes an expired key
+for a job that has never become Ready. It restarts the VM and signs Tailscale out
+before re-enrollment. Staged repairs survive closing the panel. A server approved
+into a different tailnet stays unready and can use this action to recover. Nitro
+repair can also update the guest's bootstrap disk. Older AWS jobs without the
+new bootstrap keep OAuth-key refresh support, but cannot switch to browser
+re-enrollment through a userdata update alone; use a new instance or SSH repair. **Start**, **Stop**, and **Delete** require explicit review.
 Stop ends running programs and retains billable disks; Delete removes the owned
 instance/boot disk and GCP firewall rule. Shared networking is left intact.
 Closing the setup panel retains created resources for Manage; it does not delete

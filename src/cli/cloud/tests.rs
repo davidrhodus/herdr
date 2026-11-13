@@ -13,10 +13,45 @@ impl Context {
 }
 impl Drop for Context {
     fn drop(&mut self) {
+        super::TEST_INPUT.with(|v| *v.borrow_mut() = None);
+        super::tailscale_setup::TEST_STATUS.with(|v| *v.borrow_mut() = None);
         transport::FAKE.with(|f| *f.borrow_mut() = None);
         model::TEST_ROOT.with(|r| *r.borrow_mut() = None);
         std::fs::remove_dir_all(&self.0).unwrap();
     }
+}
+
+#[test]
+fn first_create_guides_missing_account_setup_then_returns_to_the_same_create_review() {
+    let _context = Context::new();
+    super::tailscale_setup::TEST_STATUS.with(|v| {
+        *v.borrow_mut() = Some(
+            json!({"BackendState":"Running","CurrentTailnet":{"MagicDNSSuffix":"tail.example"}}),
+        )
+    });
+    super::TEST_INPUT.with(|v| {
+        *v.borrow_mut() = Some(
+            ["1", "", "1", "1", "1", "first-server", "", "", ""]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    });
+    transport::FAKE.with(|f|*f.borrow_mut()=Some(Box::new(|c,_| {
+        let a=args(c);
+        if let Some(value)=super::aws_network::tests::fixture(c) {return Ok(value);}
+        if a==["--version"] {return Ok(b"aws-cli/2.40.2".to_vec());}
+        if a.iter().any(|a|a=="list-profiles") {return Ok(b"existing\n".to_vec());}
+        if a.iter().any(|a|a=="get") {return Ok(b"us-west-2\n".to_vec());}
+        if a.iter().any(|a|a=="get-caller-identity") {return Ok(bytes(json!({"Account":"123"})));}
+        if a.iter().any(|a|a=="describe-vpcs") {return Ok(bytes(json!({"Vpcs":[{"VpcId":"vpc-test","State":"available","CidrBlock":"10.0.0.0/16"}]})));}
+        panic!("must not log in again or create cloud resources: {a:?}")
+    })));
+    super::create(Provider::Aws, false).unwrap();
+    assert_eq!(settings().unwrap().accounts.len(), 1);
+    assert_eq!(settings().unwrap().accounts[0].configuration, "existing");
+    assert!(super::TEST_INPUT.with(|v| v.borrow().as_ref().unwrap().is_empty()));
+    assert!(jobs().unwrap().is_empty()); // User cancelled the final create review.
 }
 pub(super) fn job() -> Job {
     serde_json::from_value(json!({"id":"12345678-1234-4234-8234-123456789abc","account":{"name":"test","provider":"Aws","configuration":"test","principal":"123","location":"us-west-2","project":"","image":"ami-test","size":"t3.small","subnet":"subnet-test","security_group":"sg-test"},"name":"server","nitro":false,"request":{"ClientToken":"12345678-1234-4234-8234-123456789abc","UserData":"dummy"},"resource":null,"operation":null,"submitted":false,"phase":"Reviewed","target":null,"endpoint":null,"deleted":false})).unwrap()
@@ -217,6 +252,41 @@ fn google_auth(c: &Command) -> Option<Vec<u8>> {
     } else {
         b"dummy-token\n".to_vec()
     })
+}
+
+#[test]
+fn running_gcp_instance_survives_expired_creation_and_start_operation_history() {
+    let _context = Context::new();
+    let mut j = google_job();
+    j.operation = Some("expired-create".into());
+    let id = j.id.clone();
+    transport::FAKE.with(|f| {
+        *f.borrow_mut() = Some(Box::new(move |c, input| {
+            if let Some(bytes) = google_auth(c) {
+                return Ok(bytes);
+            }
+            let config = std::str::from_utf8(input).unwrap();
+            assert!(
+                !config.contains("/operations/"),
+                "owned live resource must not depend on expired history"
+            );
+            assert!(config.contains("/instances/"));
+            assert!(config.contains("request = \"GET\""));
+            Ok(response(
+                json!({"id":"123","status":"RUNNING","labels":{"herdr-job":id}}),
+            ))
+        }))
+    });
+    provider::create(&mut j).unwrap();
+    assert!(j.operation.is_none());
+    j.pending_action = Some(Lifecycle {
+        name: "start".into(),
+        token: uuid().unwrap(),
+        operation: Some("expired-start".into()),
+        cleanup_operation: None,
+    });
+    provider::finish_pending(&mut j).unwrap();
+    assert!(j.pending_action.is_none());
 }
 #[test]
 fn a_failed_gcp_start_can_be_followed_by_explicit_delete() {

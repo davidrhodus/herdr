@@ -1,10 +1,13 @@
 //! Interactive client-local cloud control, hosted inside the machine manager PTY.
 //! Provisioning authority is deliberately separate from catalog-sync authority.
 mod aws_network;
+mod aws_onboarding;
 mod bootstrap;
+mod enrollment_repair;
 mod model;
 mod nitro;
 mod provider;
+mod tailscale_setup;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -14,12 +17,28 @@ use std::{
     process::Command,
 };
 use transport::*;
+#[cfg(test)]
+thread_local! {static TEST_INPUT:std::cell::RefCell<Option<std::collections::VecDeque<String>>>=const {std::cell::RefCell::new(None)};}
 
 fn input(label: &str, default: &str) -> io::Result<String> {
+    #[cfg(test)]
+    if let Some(answer) = TEST_INPUT.with(|v| {
+        v.borrow_mut()
+            .as_mut()
+            .map(|queue| queue.pop_front().expect("unexpected wizard prompt"))
+    }) {
+        return Ok(if answer.is_empty() {
+            default.into()
+        } else {
+            answer
+        });
+    }
     print!("{label} [{}]: ", safe(default));
     io::stdout().flush()?;
     let mut value = String::new();
-    io::stdin().read_line(&mut value)?;
+    if io::stdin().read_line(&mut value)? == 0 {
+        return Err(error("Setup input closed; no further action taken"));
+    }
     let value = value.trim();
     if value.chars().any(char::is_control) || value.len() > 4096 {
         return Err(error(
@@ -115,6 +134,13 @@ pub(super) fn run(args: &[String]) -> io::Result<i32> {
     }
 }
 fn configure(provider: Provider) -> io::Result<()> {
+    if provider == Provider::Aws {
+        aws_onboarding::configure().map(|_| ())
+    } else {
+        configure_legacy(provider)
+    }
+}
+fn configure_legacy(provider: Provider) -> io::Result<()> {
     println!("\nAccount settings stay on this computer. Sign-in uses the official AWS/gcloud tool; secrets are never added to the shared server list.");
     let configuration = input("Local account/profile name", "default")?;
     token(&configuration)?;
@@ -210,8 +236,25 @@ fn configure(provider: Provider) -> io::Result<()> {
     Ok(())
 }
 fn tailscale() -> io::Result<()> {
+    println!("Tailscale setup\n  1  Browser approval for each new server (no keys or OAuth client)\n  2  Automated OAuth enrollment (advanced)\n  0  Back");
+    match input("Choose", "1")?.as_str() {
+        "0" => return Ok(()),
+        "1" => {
+            tailscale_setup::ensure()?;
+            let mut s = settings()?;
+            s.enrollment = Some(Enrollment::Browser);
+            save(&root()?.join("accounts.json"), &s)?;
+            println!("Browser enrollment selected. Herdr will open the server approval link automatically.");
+            return Ok(());
+        }
+        "2" => {}
+        _ => return Err(error("Choose 1, 2, or 0")),
+    }
+    tailscale_setup::ensure()?;
+
     println!("Create a Tailscale OAuth client with auth_keys write scope and a server tag. The OAuth secret stays in a private local file; VMs get single-use 24-hour keys. Tailnet policy must permit your managers to reach the tagged servers on SSH.");
     let mut s = settings()?;
+    s.enrollment = Some(Enrollment::OAuth);
     s.oauth_client = input("OAuth client ID", &s.oauth_client)?;
     s.tailnet = input(
         "Tailnet name (or - for the authenticated tailnet)",
@@ -250,6 +293,9 @@ fn choose_account(provider: &Provider) -> io::Result<Account> {
         .iter()
         .filter(|a| &a.provider == provider)
         .collect();
+    if accounts.len() == 1 {
+        return Ok(accounts[0].clone());
+    }
     if accounts.is_empty() {
         return Err(error(
             "Configure this provider account first (Cloud instances → Configure account)",
@@ -273,7 +319,14 @@ fn choose_account(provider: &Provider) -> io::Result<Account> {
         .ok_or_else(|| error("No such account"))
 }
 fn create(provider: Provider, nitro: bool) -> io::Result<()> {
-    let mut account = choose_account(&provider)?;
+    let expected_tailnet = tailscale_setup::ensure()?;
+    let has_account = settings()?.accounts.iter().any(|a| a.provider == provider);
+    let mut account = if !has_account && provider == Provider::Aws {
+        println!("First server: let's connect your AWS account.");
+        aws_onboarding::configure()?
+    } else {
+        choose_account(&provider)?
+    };
     let name = input("Server name", "herdr-server")?;
     token(&name)?;
     account.size = input(
@@ -284,13 +337,17 @@ fn create(provider: Provider, nitro: bool) -> io::Result<()> {
     if nitro && !account.image.contains("kernel-6.18") {
         return Err(error("Nitro Sandboxes require an AL2023 kernel 6.18 AMI. Configure the matching AWS image first."));
     }
-    verify_account(&account)?;
+    if provider == Provider::Aws {
+        aws_onboarding::authenticate(&account)?;
+    } else {
+        verify_account(&account)?;
+    }
     if provider == Provider::Aws
         && input("Use saved networking? (yes / choose)", "yes")? == "choose"
     {
         aws_network::select(&mut account)?;
     }
-    println!("\nCreate review\n  Account: {}\n  Location: {}\n  Size: {}\n  Image: {}\n  Network: {}\n  Outbound internet: external address\n  Public SSH: blocked\n  SSH user: herdr · dedicated local key\n  Tailscale: single-use enrollment → verified SSH → current Rust build",safe(&account.principal),safe(&account.location),safe(&account.size),safe(&account.image),safe(&account.subnet));
+    println!("\nCreate review\n  Account: {}\n  Location: {}\n  Size: {}\n  Image: {}\n  Network: {}\n  Outbound internet: external address\n  Public SSH: blocked\n  SSH user: herdr · dedicated local key\n  Tailscale: automatic setup → browser approval or saved OAuth → verified SSH → current Rust build",safe(&account.principal),safe(&account.location),safe(&account.size),safe(&account.image),safe(&account.subnet));
     if nitro {
         println!("  Nitro: one dedicated EC2 parent and one direct-mode guest; persistent 16 GiB guest root disk. Parent preparation reboots this new dedicated parent only.");
     }
@@ -316,6 +373,9 @@ fn create(provider: Provider, nitro: bool) -> io::Result<()> {
         endpoint: None,
         deleted: false,
         pending_action: None,
+        expected_tailnet: Some(expected_tailnet),
+        reauth_nonce: None,
+        pending_enrollment_repair: None,
     };
     job.save()?;
     println!(
@@ -325,6 +385,9 @@ fn create(provider: Provider, nitro: bool) -> io::Result<()> {
     resume(&mut job)
 }
 fn resume(job: &mut Job) -> io::Result<()> {
+    if job.pending_enrollment_repair.is_some() {
+        enrollment_repair::resume(job)?;
+    }
     if matches!(
         job.phase.as_str(),
         "start failed" | "stop failed" | "delete failed"
@@ -379,26 +442,8 @@ fn manage() -> io::Result<()> {
                     "This server is already ready. Use the saved server's SSH repair instead.",
                 ));
             }
-            if !confirm("Repair first-boot enrollment? EC2 parents will stop and restart. This applies only to a job that has never become Ready.","REPAIR")? {return Ok(());}
-            let public = bootstrap::identity(&j.id)?;
-            let auth = bootstrap::enrollment(&settings()?)?;
-            let script =
-                bootstrap::script(&j.id, &public, &auth, &format!("herdr-{}", &j.id[..18]))?;
-            provider::repair_enrollment(j, &script)?;
-            if j.nitro {
-                let child_auth = bootstrap::enrollment(&settings()?)?;
-                let child = bootstrap::script(
-                    &format!("{}-guest", j.id),
-                    &public,
-                    &child_auth,
-                    &format!("herdr-guest-{}", &j.id[..12]),
-                )?;
-                write(
-                    &job_dir(&j.id)?.join("guest-bootstrap.sh"),
-                    child.as_bytes(),
-                )?;
-                nitro::repair_guest(j)?;
-            }
+            if !confirm("Repair first-boot enrollment? The VM will restart and Tailscale will sign out and request new approval. This applies only to a job that has never become Ready.","REPAIR")? {return Ok(());}
+            enrollment_repair::stage(j)?;
             resume(j)
         }
         action @ ("start" | "stop" | "delete") => {

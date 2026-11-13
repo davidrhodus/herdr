@@ -2,6 +2,7 @@
 set -eu
 umask 077
 # HERDR-ENROLLMENT @AUTH@
+# HERDR-REAUTH @REAUTH@
 # Install a durable retry service before package/network work. Closing the
 # manager or a temporary repository outage must not abandon first boot.
 if test "${HERDR_CLOUD_BOOTSTRAP:-}" != 1; then
@@ -48,21 +49,42 @@ if ! command -v tailscale >/dev/null; then
     rm -f /root/herdr-tailscale-install.sh
 fi
 systemctl enable --now tailscaled
-if ! tailscale status --json | jq -e '.BackendState == "Running"' >/dev/null; then
-    auth='@AUTH@'
-    metadata=/root/herdr-latest-bootstrap
-    token=$(curl -fsS --connect-timeout 2 --max-time 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null || true)
-    if test -n "$token"; then
-        curl -fsS --connect-timeout 2 --max-time 3 -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/user-data > "$metadata" 2>/dev/null || true
-    else
-        curl -fsS --connect-timeout 2 --max-time 3 -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/startup-script > "$metadata" 2>/dev/null || true
+auth='@AUTH@'
+reauth=$(sed -n 's/^# HERDR-REAUTH \([A-Za-z0-9-]*\)$/\1/p' "$0")
+metadata=/root/herdr-latest-bootstrap
+trap 'rm -f /root/herdr-latest-bootstrap /root/herdr-enrollment-key /root/herdr-login-output' EXIT
+token=$(curl -fsS --connect-timeout 2 --max-time 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null || true)
+if test -n "$token"; then
+    curl -fsS --connect-timeout 2 --max-time 3 -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/user-data > "$metadata" 2>/dev/null || true
+else
+    curl -fsS --connect-timeout 2 --max-time 3 -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/startup-script > "$metadata" 2>/dev/null || true
+fi
+latest=$(sed -n 's/^# HERDR-ENROLLMENT \(tskey-auth-[A-Za-z0-9-]*\)$/\1/p' "$metadata")
+latest_reauth=$(sed -n 's/^# HERDR-REAUTH \([A-Za-z0-9-]*\)$/\1/p' "$metadata")
+if test -n "$latest" && test "$(printf '%s\n' "$latest" | wc -l)" -eq 1; then auth=$latest; fi
+if test -n "$latest_reauth" && test "$(printf '%s\n' "$latest_reauth" | wc -l)" -eq 1; then reauth=$latest_reauth; fi
+if test -n "$reauth"; then
+    handled=$(cat /var/lib/herdr-cloud/reauth 2>/dev/null || true)
+    if test "$handled" != "$reauth"; then
+        tailscale logout
+        printf '%s' "$reauth" > /var/lib/herdr-cloud/reauth
     fi
-    latest=$(sed -n 's/^# HERDR-ENROLLMENT \(tskey-auth-[A-Za-z0-9-]*\)$/\1/p' "$metadata")
-    rm -f "$metadata"
-    if test -n "$latest" && test "$(printf '%s\n' "$latest" | wc -l)" -eq 1; then auth=$latest; fi
-    printf '%s' "$auth" > /root/herdr-enrollment-key
-    tailscale up --auth-key=file:/root/herdr-enrollment-key --hostname='@HOSTNAME@'
-    rm -f /root/herdr-enrollment-key
+    printf '\nHERDR-ENROLLMENT-START @JOB@ %s\n' "$reauth" > /dev/console
+fi
+if ! tailscale status --json | jq -e '.BackendState == "Running"' >/dev/null; then
+    if test -n "$auth"; then
+        printf '%s' "$auth" > /root/herdr-enrollment-key
+        tailscale up --auth-key=file:/root/herdr-enrollment-key --hostname='@HOSTNAME@' --timeout=30s
+    else
+        tailscale up --hostname='@HOSTNAME@' --timeout=10s > /root/herdr-login-output 2>&1 || true
+        if ! tailscale status --json | jq -e '.BackendState == "Running"' >/dev/null; then
+            url=$(tailscale status --json | jq -r '.AuthURL // empty')
+            case "$url" in
+                https://login.tailscale.com/a/*) printf '\nHERDR-LOGIN @JOB@ %s\n' "$url" > /dev/console ;;
+            esac
+            exit 1
+        fi
+    fi
 fi
 cat > /usr/local/sbin/herdr-cloud-report <<'EOF'
 #!/bin/bash
@@ -70,7 +92,9 @@ set -eu
 node=$(tailscale status --json | jq -er '.Self.ID')
 ip=$(tailscale ip -4)
 pub=$(awk '{print $1 " " $2}' /etc/ssh/ssh_host_ed25519_key.pub)
-printf 'HERDR-READY @JOB@ %s %s %s\n' "$node" "$ip" "$pub" > /dev/console
+printf '\nHERDR-READY @JOB@ %s %s %s\n' "$node" "$ip" "$pub" > /dev/console
+tailnet=$(tailscale status --json | jq -c '.CurrentTailnet')
+printf 'HERDR-TAILNET @JOB@ %s\n' "$tailnet" > /dev/console
 EOF
 chmod 700 /usr/local/sbin/herdr-cloud-report
 cat > /etc/systemd/system/herdr-cloud-report.service <<'EOF'

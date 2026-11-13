@@ -76,7 +76,7 @@ pub(super) fn capture(
     Ok(bytes)
 }
 pub(super) fn aws(account: &Account, args: &[&str]) -> io::Result<Value> {
-    let mut c = Command::new("aws");
+    let mut c = Command::new(crate::platform::cloud_aws_program());
     c.args([
         "--profile",
         &account.configuration,

@@ -151,6 +151,9 @@ pub(super) fn inspect(job: &Job) -> io::Result<Value> {
     Ok(value)
 }
 pub(super) fn create(job: &mut Job) -> io::Result<()> {
+    if job.expected_tailnet.is_some() {
+        super::tailscale_setup::check(job, &super::tailscale_setup::status()?)?;
+    }
     verify_account(&job.account)?;
     if job.deleted {
         return Err(error("This job was deleted; create a new job"));
@@ -297,6 +300,11 @@ pub(super) fn operation_done(value: &Value) -> io::Result<bool> {
     Ok(value["status"] == "DONE")
 }
 fn wait_running(job: &mut Job) -> io::Result<()> {
+    // A captured resource is authoritative after operation-history expiration.
+    if job.resource.is_some() && job.operation.is_some() {
+        job.operation = None;
+        job.save()?;
+    }
     let start = Instant::now();
     loop {
         if let Some(operation) = &job.operation {
@@ -313,6 +321,8 @@ fn wait_running(job: &mut Job) -> io::Result<()> {
                 std::thread::sleep(Duration::from_secs(3));
                 continue;
             }
+            job.operation = None;
+            job.save()?;
         }
         let v = inspect(job)?;
         job.resource = Some(resource_identity(job, &v)?);
@@ -427,10 +437,12 @@ fn delete_firewall(job: &mut Job) -> io::Result<()> {
 pub(super) fn finish_pending(job: &mut Job) -> io::Result<bool> {
     let action = job.pending_action.as_ref().map(|a| a.name.clone());
     let result = execute_pending(job);
-    if result
-        .as_ref()
-        .is_err_and(|e| e.kind() == io::ErrorKind::InvalidInput)
-    {
+    if result.as_ref().is_err_and(|e| {
+        matches!(
+            e.kind(),
+            io::ErrorKind::InvalidInput | io::ErrorKind::NotFound
+        )
+    }) {
         job.pending_action = None;
         job.phase(&format!("{} failed", action.as_deref().unwrap_or("Action")))?;
     }
@@ -441,11 +453,12 @@ fn execute_pending(job: &mut Job) -> io::Result<bool> {
         return Ok(false);
     };
     verify_account(&job.account)?;
-    let missing = match inspect(job) {
-        Ok(_) => false,
-        Err(e) if pending.name == "delete" && e.kind() == io::ErrorKind::NotFound => true,
+    let current = match inspect(job) {
+        Ok(value) => Some(value),
+        Err(e) if pending.name == "delete" && e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),
     };
+    let missing = current.is_none();
     if !missing {
         let id = job
             .resource
@@ -487,32 +500,38 @@ fn execute_pending(job: &mut Job) -> io::Result<bool> {
                 }
             }
             Provider::Gcp => {
-                let operation = if let Some(op) = &pending.operation {
-                    op.clone()
-                } else {
-                    let (method, suffix) = if pending.name == "delete" {
-                        (
-                            "DELETE",
-                            format!("instances/{}?requestId={}", job.name, pending.token),
-                        )
+                let reached = current.as_ref().is_some_and(|value| {
+                    (pending.name == "start" && value["status"] == "RUNNING")
+                        || (pending.name == "stop" && value["status"] == "TERMINATED")
+                });
+                if !reached {
+                    let operation = if let Some(op) = &pending.operation {
+                        op.clone()
                     } else {
-                        (
-                            "POST",
-                            format!(
-                                "instances/{}/{}?requestId={}",
-                                job.name, pending.name, pending.token
-                            ),
-                        )
+                        let (method, suffix) = if pending.name == "delete" {
+                            (
+                                "DELETE",
+                                format!("instances/{}?requestId={}", job.name, pending.token),
+                            )
+                        } else {
+                            (
+                                "POST",
+                                format!(
+                                    "instances/{}/{}?requestId={}",
+                                    job.name, pending.name, pending.token
+                                ),
+                            )
+                        };
+                        let result = gcp(&job.account, method, &suffix, None)?;
+                        let op = field(&result, "name")?.to_owned();
+                        if let Some(action) = job.pending_action.as_mut() {
+                            action.operation = Some(op.clone());
+                        }
+                        job.save()?;
+                        op
                     };
-                    let result = gcp(&job.account, method, &suffix, None)?;
-                    let op = field(&result, "name")?.to_owned();
-                    if let Some(action) = job.pending_action.as_mut() {
-                        action.operation = Some(op.clone());
-                    }
-                    job.save()?;
-                    op
-                };
-                wait_operation(job, &operation)?;
+                    wait_operation(job, &operation)?;
+                }
             }
         }
     }
@@ -592,6 +611,19 @@ pub(super) fn repair_enrollment(job: &mut Job, script: &str) -> io::Result<()> {
                 Some(&metadata),
             )?;
             wait_operation(job, field(&operation, "name")?)?;
+            // Updating metadata does not restart a completed oneshot service.
+            // A reviewed repair must boot the VM so it reads the new nonce.
+            if value["status"] == "TERMINATED" {
+                lifecycle(job, "start")?;
+            } else {
+                let operation = gcp(
+                    &job.account,
+                    "POST",
+                    &format!("instances/{}/reset?requestId={}", job.name, uuid()?),
+                    None,
+                )?;
+                wait_operation(job, field(&operation, "name")?)?;
+            }
         }
     }
     Ok(())

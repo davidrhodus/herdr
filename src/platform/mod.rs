@@ -3,6 +3,15 @@
 //! Centralizes OS-dependent behavior behind a clean boundary so core
 //! modules don't scatter `#[cfg]` branches through product logic.
 
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn cloud_aws_program() -> std::path::PathBuf {
+    std::path::PathBuf::from("aws")
+}
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn cloud_aws_install_url() -> &'static str {
+    "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+}
+
 #[cfg(unix)]
 pub(crate) mod ssh_agent;
 
