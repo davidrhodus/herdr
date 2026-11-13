@@ -37,6 +37,11 @@ def source_id(root: Path) -> str:
         for value in (variant.encode(), str(root.resolve()).encode()):
             digest.update(len(value).to_bytes(8, "big"))
             digest.update(value)
+    number=os.environ.get("HERDR_BUILD_NUMBER", "")
+    if number:
+        if not number.isascii() or not number.isdigit() or str(int(number))!=number or not 1<=int(number)<=4294967295:
+            raise ValueError("Invalid build number")
+        digest.update(b"herdr-build-number-v1\0"+number.encode()+b"\0")
     for path in sorted(paths):
         relative = path.relative_to(root)
         if any(part in ("target", ".git", "__pycache__") for part in relative.parts):

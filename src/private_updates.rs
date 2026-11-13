@@ -668,6 +668,10 @@ pub(crate) fn run(args: &[String]) -> io::Result<i32> {
             check()?;
             println!("{}", status_line());
         }
+        [a] if a == "build-info" => println!(
+            "{}",
+            serde_json::json!({"build_id":crate::build_info::build_id(),"build_number":crate::build_info::build_number(),"display_version":crate::build_info::DISPLAY_VERSION})
+        ),
         [a] if a == "worker" => serve_worker()?,
         [a] if a == "peers" => println!("{}", report::peers()?),
         [a, bind] if a == "serve" => feed::serve(bind.parse().map_err(io::Error::other)?)?,

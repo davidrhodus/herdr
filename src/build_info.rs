@@ -2,6 +2,13 @@
 
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub(crate) const DISPLAY_VERSION: &str = env!("HERDR_DISPLAY_VERSION");
+pub(crate) const COMPACT_VERSION: &str = env!("HERDR_COMPACT_VERSION");
+
+pub(crate) fn build_number() -> Option<u32> {
+    option_env!("HERDR_BUILD_NUMBER").and_then(|value| value.parse().ok())
+}
+
 pub fn channel() -> &'static str {
     non_empty(option_env!("HERDR_BUILD_CHANNEL")).unwrap_or("stable")
 }

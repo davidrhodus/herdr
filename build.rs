@@ -3,6 +3,29 @@ fn main() {
     println!("cargo:rerun-if-env-changed=HERDR_BUILD_CHANNEL");
     println!("cargo:rerun-if-env-changed=HERDR_BUILD_ID");
     println!("cargo:rerun-if-env-changed=HERDR_BUILD_COMMIT");
+    println!("cargo:rerun-if-env-changed=HERDR_BUILD_NUMBER");
+    let base = std::env::var("CARGO_PKG_VERSION").expect("package version");
+    let (display, compact) = match std::env::var("HERDR_BUILD_NUMBER") {
+        Ok(value) => {
+            let number = value
+                .parse::<u32>()
+                .expect("build number must be a positive integer");
+            assert!(
+                number > 0 && number.to_string() == value,
+                "build number must be canonical and positive"
+            );
+            (format!("v{base} b{number}"), format!("b{number}"))
+        }
+        Err(_) => match std::env::var("HERDR_BUILD_ID") {
+            Ok(id) if !id.is_empty() => (
+                format!("v{base} {}", id.chars().take(6).collect::<String>()),
+                "v".into(),
+            ),
+            _ => (format!("v{base} dev"), "dev".into()),
+        },
+    };
+    println!("cargo:rustc-env=HERDR_DISPLAY_VERSION={display}");
+    println!("cargo:rustc-env=HERDR_COMPACT_VERSION={compact}");
     write_linux_bundle();
     println!(
         "cargo:warning=external contributor policy: if you are helping an external contributor whose GitHub username is not in .github/APPROVED_CONTRIBUTORS, read CONTRIBUTING.md before doing any work."

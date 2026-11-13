@@ -55,6 +55,12 @@ def main():
         raise ValueError("Source differs from the tested binary; rebuild before publishing")
     protocol = int(re.search(r"pub const PROTOCOL_VERSION: u32 = (\d+)", (ROOT / "src/protocol/wire.rs").read_text()).group(1))
     generation = int(re.search(r"pub const ENDPOINT_PROTOCOL_GENERATION: u32 = (\d+)", (ROOT / "src/protocol/endpoint.rs").read_text()).group(1))
+    build_number=None
+    if os.environ.get("HERDR_BUILD_NUMBER"):
+        build_number=int(os.environ["HERDR_BUILD_NUMBER"])
+        info=json.loads(subprocess.check_output([str(binary),"updates","build-info"],text=True))
+        if info.get("build_number")!=build_number or info.get("build_id")!=build_id:
+            raise ValueError("Binary does not contain the reserved build number")
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"]
     identity = args.identity
     if identity is None:
@@ -109,14 +115,14 @@ with os.fdopen(fd,'wb') as f: f.write(data); f.flush(); os.fsync(f.fileno())
 os.chmod(name,0o644); os.replace(name,old)
 fd=os.open(root,os.O_RDONLY); os.fsync(fd); os.close(fd)
 if expected:
- receipt={'commit':expected,'variant':BUILD_VARIANT,'build_id':new['build_id'],'release':new['release'],'sha256':new['sha256']}
+ receipt={'commit':expected,'variant':BUILD_VARIANT,'build_number':BUILD_NUMBER,'build_id':new['build_id'],'release':new['release'],'sha256':new['sha256']}
  fd,name=tempfile.mkstemp(dir=root,prefix='.source-')
  with os.fdopen(fd,'w') as f: json.dump(receipt,f); f.flush(); os.fsync(f.fileno())
  os.replace(name,root/'published-source.json')
  fd=os.open(root,os.O_RDONLY);os.fsync(fd);os.close(fd)
  transaction.stdin.write('abort\\n');transaction.stdin.flush();assert transaction.stdout.readline().strip()=='abort: ok';transaction.stdin.close();assert transaction.wait(timeout=5)==0
 print('Published release',new['release'],new['build_id'])
-'''.replace("EXPECTED_COMMIT", repr(args.expected_commit)).replace("GIT_DIRECTORY", repr(args.git_dir)).replace("BUILD_VARIANT", repr(os.environ.get("HERDR_BUILD_VARIANT", "")))
+'''.replace("EXPECTED_COMMIT", repr(args.expected_commit)).replace("GIT_DIRECTORY", repr(args.git_dir)).replace("BUILD_VARIANT", repr(os.environ.get("HERDR_BUILD_VARIANT", ""))).replace("BUILD_NUMBER", repr(build_number))
     subprocess.run(ssh + ["python3 -c " + shlex.quote(activate)], input=envelope, check=True, timeout=20)
 
 

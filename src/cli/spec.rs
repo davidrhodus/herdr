@@ -45,6 +45,11 @@ pub(super) fn command() -> Command {
                 .subcommand(Command::new("disable").about("Disable private updates"))
                 .subcommand(Command::new("status").about("Show private update status"))
                 .subcommand(
+                    Command::new("build-info")
+                        .about("Show compiled build identity")
+                        .hide(true),
+                )
+                .subcommand(
                     Command::new("worker")
                         .about("Run the private update service")
                         .hide(true),

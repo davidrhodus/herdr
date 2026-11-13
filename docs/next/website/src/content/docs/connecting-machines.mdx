@@ -562,3 +562,13 @@ A new master push automatically retries changed code. Signing/publication outage
 retry automatically; lint or test failures wait for a changed commit or an
 explicit retry. Logs live in `~/.local/state/herdr/private-build-worker/logs` on
 the publishing Mac. The existing checkout in `~/herdr` remains available for work.
+
+The lower-left sidebar shows a small compiled version such as **v0.9.5 b42**,
+with the sync indicator directly above it. The same signed binary displays the
+same build number on every Mac. Redie reserves increasing build numbers before
+automatic release builds; retries of the exact queued request reuse their
+reservation. Failed builds can leave gaps, and the counter is never reset by
+queue history cleanup. Build numbers are included in both Linux payloads and
+the Mac manager. Unnumbered source builds display `dev` or a short build hash.
+In a collapsed sidebar the label shortens to `b42` when it fits; expand it or
+open sync details to see the full version.

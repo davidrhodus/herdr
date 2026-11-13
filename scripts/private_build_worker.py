@@ -99,13 +99,16 @@ class Worker:
             raise Failed("Unable to prepare build checkout")
 
     def process(self, request):
+        self.env.pop("HERDR_BUILD_NUMBER",None)
         oid = request.get("oid", "")
         if not OID.fullmatch(oid) or not isinstance(request.get("generation"), int):
             raise Failed("Invalid queued commit")
         token = [oid, request["generation"], self.context]
+        previous=read(self.state / "attempt.json",{})
+        if previous.get("token")==token and previous.get("result")=="published":return
         publication = self.ssh("status").get("publication")
         if publication and publication.get("commit")==oid and publication.get("variant")==self.env["HERDR_BUILD_VARIANT"]:
-            self.phase(oid,"published",build_id=publication.get("build_id"),recovered=True)
+            self.phase(oid,"published",build_id=publication.get("build_id"),recovered=True,build_number=publication.get("build_number"))
             write(self.state / "attempt.json", {"token":token,"result":"published"})
             return
         previous = read(self.state / "attempt.json", {})
@@ -128,8 +131,10 @@ class Worker:
                 if not self.current(oid):
                     self.phase(oid, "superseded")
                     return
+                reservation=self.ssh("reserve",{"oid":oid,"generation":request["generation"],"context":self.context})
+                self.env["HERDR_BUILD_NUMBER"]=str(reservation["build_number"])
                 phase = "building"
-                self.phase(oid, phase)
+                self.phase(oid, phase,build_number=reservation["build_number"])
                 self.run(["just", "build-linux-bundle"])
                 self.exact_checkout(oid)
                 if not self.current(oid):
@@ -138,7 +143,7 @@ class Worker:
                 phase = "publishing"
                 self.phase(oid, phase)
                 self.run([sys.executable, str(LIBEXEC / "publish_private_update.py"), str(self.checkout / "target/release/herdr"), "--source-root", str(self.checkout), "--expected-commit", oid, "--host", self.config["host"], "--identity", self.config["identity"], "--git-dir", self.config["git_dir"]])
-                self.phase(oid, "published")
+                self.phase(oid, "published",build_number=int(self.env["HERDR_BUILD_NUMBER"]))
                 write(self.state / "attempt.json", {"token": token, "result": "published"})
             except Exception as error:
                 if not self.current(oid):

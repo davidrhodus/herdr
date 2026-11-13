@@ -39,6 +39,17 @@ class LinuxBundleTests(unittest.TestCase):
             with mock.patch.dict(os.environ,{"HERDR_BUILD_VARIANT":"second"}):
                 self.assertNotEqual(first,bundle.source_id(root))
 
+    def test_build_number_changes_identity_and_survives_leaf_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for name in ("Cargo.toml","Cargo.lock","build.rs","scripts/build_linux_bundle.py"):
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text("source")
+            with mock.patch.dict(os.environ,{"HERDR_BUILD_NUMBER":"1"}):first=bundle.source_id(root)
+            with mock.patch.dict(os.environ,{"HERDR_BUILD_NUMBER":"2"}):self.assertNotEqual(first,bundle.source_id(root))
+            with mock.patch.dict(os.environ,{"HERDR_BUILD_NUMBER":"0"}):
+                with self.assertRaises(ValueError):bundle.source_id(root)
+        self.assertEqual(bundle.leaf_environment({"HERDR_BUILD_NUMBER":"42"},"id")["HERDR_BUILD_NUMBER"],"42")
+
     def test_leaf_environment_cannot_embed_an_old_bundle_recursively(self):
         original = {
             "HERDR_LINUX_X86_64_BINARY": "/old/intel",

@@ -50,6 +50,10 @@ pub(crate) fn view() -> View {
             details: format!("Sync status unavailable: {error}"),
         },
     };
+    view.details.insert_str(
+        0,
+        &format!("Herdr {}\n", crate::build_info::DISPLAY_VERSION),
+    );
     view.details
         .push_str(&format!("\n{}", crate::private_updates::status_line()));
     view

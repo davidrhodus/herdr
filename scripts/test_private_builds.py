@@ -1,4 +1,5 @@
 import contextlib
+import concurrent.futures
 import io
 import json
 import os
@@ -72,6 +73,38 @@ class QueueTests(unittest.TestCase):
         queue.enqueue(self.bare, self.state, self.a)
         b = self.advance()
         self.assertEqual(queue.request(self.bare, self.state)["oid"], b)
+
+    def test_build_numbers_are_monotonic_and_exact_retries_reuse_the_reservation(self):
+        queue.enqueue(self.bare,self.state,self.a)
+        value={"oid":self.a,"generation":1,"context":"a"*64}
+        self.assertEqual(queue.reserve_number(self.bare,self.state,value)["build_number"],1)
+        self.assertEqual(queue.reserve_number(self.bare,self.state,value)["build_number"],1)
+        queue.enqueue(self.bare,self.state,self.a,force=True)
+        value["generation"]=2
+        self.assertEqual(queue.reserve_number(self.bare,self.state,value)["build_number"],2)
+        value["context"]="b"*64
+        self.assertEqual(queue.reserve_number(self.bare,self.state,value)["build_number"],3)
+
+    def test_parallel_allocations_are_distinct_and_corruption_never_resets_counter(self):
+        queue.enqueue(self.bare,self.state,self.a)
+        values=[{"oid":self.a,"generation":1,"context":format(i,"064x")} for i in range(8)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            numbers=list(pool.map(lambda v:queue.reserve_number(self.bare,self.state,v)["build_number"],values))
+        self.assertEqual(sorted(numbers),list(range(1,9)))
+        queue.write(self.state/"build-counter.json",{"version":1,"value":"broken"})
+        with self.assertRaises(ValueError):queue.reserve_number(self.bare,self.state,values[0])
+        (self.state/"build-counter.json").unlink()
+        with self.assertRaises(ValueError):queue.reserve_number(self.bare,self.state,values[0])
+
+    def test_sequential_worker_jobs_do_not_leak_the_previous_build_number(self):
+        value=self.fake_worker();observed=[]
+        value.ssh=lambda mode,payload=None: {"publication":None} if mode=="status" else {"build_number":payload["generation"]}
+        def run(command):
+            if command==["just","check"]:self.assertNotIn("HERDR_BUILD_NUMBER",value.env)
+            if command==["just","build-linux-bundle"]:observed.append(value.env["HERDR_BUILD_NUMBER"])
+        value.run=run
+        value.process({"oid":self.a,"generation":1});value.process({"oid":self.a,"generation":2})
+        self.assertEqual(observed,["1","2"])
 
     def fake_worker(self):
         value = worker.Worker.__new__(worker.Worker)

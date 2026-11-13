@@ -3,6 +3,7 @@ import argparse
 import base64
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -98,6 +99,41 @@ def request(repo, state):
     return value if value and current == value.get("oid") else None
 
 
+def reserve_number(repo,state,value):
+    oid=value.get("oid","");generation=value.get("generation");context=value.get("context","")
+    if not isinstance(oid,str) or not OID.fullmatch(oid) or type(generation) is not int or generation<1 or not isinstance(context,str) or not re.fullmatch("[0-9a-f]{64}",context):
+        raise ValueError("Invalid build number request")
+    key=hashlib.sha256(json.dumps([oid,generation,context],separators=(",",":")).encode()).hexdigest()
+    with locked(state):
+        request=read(state/"request.json",{})
+        if tip(repo)!=oid or request.get("oid")!=oid or request.get("generation")!=generation:
+            raise ValueError("Build request was superseded")
+        directory=state/"build-numbers";counter_path=state/"build-counter.json"
+        counter=read(counter_path)
+        if counter is None:
+            published=read(state.parent/"private-update-feed/published-source.json",{})
+            if published.get("build_number"):
+                raise ValueError("Published numbered builds exist but the counter is missing")
+            if directory.exists() and any(directory.iterdir()):
+                raise ValueError("Build counter missing; refusing to reuse numbers")
+            counter={"version":1,"value":0}
+        if not isinstance(counter,dict) or counter.get("version")!=1 or type(counter.get("value")) is not int or not 0<=counter["value"]<=4294967295:
+            raise ValueError("Invalid build counter; refusing to reset it")
+        existing=read(directory/(key+".json"))
+        if existing is not None:
+            number=existing.get("build_number")
+            if type(number) is not int or not 1<=number<=counter["value"]:
+                raise ValueError("Invalid build number reservation")
+            return existing
+        number=counter["value"]+1
+        if number>4294967295:
+            raise ValueError("Build number limit reached")
+        write(counter_path,{"version":1,"value":number})
+        result={"build_number":number}
+        write(directory/(key+".json"),result)
+        return result
+
+
 def publication(feed):
     source=read(feed / "published-source.json")
     envelope=read(feed / "current.json")
@@ -109,7 +145,7 @@ def publication(feed):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["receive", "request", "status", "update", "retry"])
+    parser.add_argument("mode", choices=["receive", "request", "status", "update", "retry", "reserve"])
     parser.add_argument("--repo", type=Path, default=Path.home() / "git/herdr.git")
     parser.add_argument("--state", type=Path, default=Path.home() / ".local/state/herdr/private-builds")
     args = parser.parse_args()
@@ -124,6 +160,10 @@ def main():
         if not current:
             raise ValueError("Master does not exist")
         print(json.dumps(enqueue(args.repo, args.state, current, force=True)))
+    elif args.mode == "reserve":
+        raw=sys.stdin.buffer.read(4097)
+        if len(raw)>4096:raise ValueError("Build number request too large")
+        print(json.dumps(reserve_number(args.repo,args.state,json.loads(raw))))
     elif args.mode == "update":
         data = sys.stdin.buffer.read(65537)
         value = json.loads(data) if len(data) <= 65536 else None
