@@ -36,7 +36,7 @@ fn now() -> u64 {
         .as_secs()
 }
 pub(crate) fn view() -> View {
-    match super::endpoint::catalog_sync::monitor::snapshot() {
+    let mut view = match super::endpoint::catalog_sync::monitor::snapshot() {
         Ok(snapshot) => present(
             snapshot,
             names(&super::sync_background::root()),
@@ -49,7 +49,10 @@ pub(crate) fn view() -> View {
             level: Level::Warning,
             details: format!("Sync status unavailable: {error}"),
         },
-    }
+    };
+    view.details
+        .push_str(&format!("\n{}", crate::private_updates::status_line()));
+    view
 }
 pub(crate) fn remember_network(root: &Path, network: &super::machine_setup::tailscale::Network) {
     let mut names = BTreeMap::new();

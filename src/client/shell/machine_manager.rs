@@ -178,6 +178,11 @@ impl ClientShellState {
         }
         repaint
     }
+    pub(crate) fn automatic_update_ready(&self) -> bool {
+        self.overlay.is_none()
+            && self.chrome_drag.is_none()
+            && self.mode == ClientShellMode::Terminal
+    }
     pub(crate) fn receive_sync_status(&mut self, view: crate::client::sync_status::View) -> bool {
         let mut repaint = self.sync_view.badge != view.badge
             || self.sync_view.compact != view.compact

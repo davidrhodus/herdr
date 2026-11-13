@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "channel": "herdr-redie-v1",
+  "address": "100.109.85.54:47383",
+  "signer": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDyZLMoawM3KXTsFE9kFB12sw0mzRMtr3jAk+1pRPjsp herdr-private-releases",
+  "enabled": true
+}

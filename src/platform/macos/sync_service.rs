@@ -108,6 +108,15 @@ pub(crate) fn install(
         &super::sync_service_environment::capture(),
     );
     let target = format!("{}/{}", domain(), label(config, state));
+    install_contents(path, contents, target, state, "sync-service.log")
+}
+fn install_contents(
+    path: PathBuf,
+    contents: String,
+    target: String,
+    state: &Path,
+    log_name: &str,
+) -> io::Result<()> {
     if std::fs::read(&path).ok().as_deref() == Some(contents.as_bytes())
         && launch(&["print", &target]).is_ok()
     {
@@ -115,7 +124,7 @@ pub(crate) fn install(
     }
     std::fs::create_dir_all(path.parent().expect("plist parent"))?;
     std::fs::create_dir_all(state.join("client"))?;
-    let log = state.join("client/sync-service.log");
+    let log = state.join("client").join(log_name);
     if !log.exists() {
         let _file = crate::platform::create_private_state_file(&log)?;
     }
@@ -129,6 +138,68 @@ pub(crate) fn install(
     register_with_retry(
         || launch(&["bootstrap", &domain(), &path.to_string_lossy()]),
         || std::thread::sleep(std::time::Duration::from_millis(200)),
+    )
+}
+pub(crate) fn install_updater(
+    executable: &Path,
+    config: &Path,
+    state: &Path,
+    identity: &str,
+) -> io::Result<()> {
+    let job = format!(
+        "dev.herdr.private-updates.{}",
+        super::sync_service_identity::namespace(config, state)
+    );
+    let path = PathBuf::from(
+        std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME unavailable"))?,
+    )
+    .join(format!("Library/LaunchAgents/{job}.plist"));
+    let contents = updater_spec(
+        executable,
+        config,
+        state,
+        identity,
+        &super::sync_service_environment::capture(),
+    );
+    install_contents(
+        path,
+        contents,
+        format!("{}/{}", domain(), job),
+        state,
+        "private-update-service.log",
+    )
+}
+fn updater_spec(
+    executable: &Path,
+    config: &Path,
+    state: &Path,
+    identity: &str,
+    environment: &[(String, String)],
+) -> String {
+    let job = format!(
+        "dev.herdr.private-updates.{}",
+        super::sync_service_identity::namespace(config, state)
+    );
+    let exe = xml(&executable.to_string_lossy());
+    let config_home = xml(&config.parent().unwrap_or(config).to_string_lossy());
+    let state_home = xml(&state.parent().unwrap_or(state).to_string_lossy());
+    let log = xml(&state
+        .join("client/private-update-service.log")
+        .to_string_lossy());
+    let env: String = environment
+        .iter()
+        .map(|(k, v)| format!("<key>{}</key><string>{}</string>", xml(k), xml(v)))
+        .collect();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>{job}</string>
+<key>ProgramArguments</key><array><string>{exe}</string><string>updates</string><string>worker</string></array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>5</integer>
+<key>ProcessType</key><string>Background</string><key>LowPriorityIO</key><true/>
+<key>EnvironmentVariables</key><dict><key>XDG_CONFIG_HOME</key><string>{config_home}</string><key>XDG_STATE_HOME</key><string>{state_home}</string><key>HERDR_UPDATE_SERVICE</key><string>1</string><key>HERDR_UPDATE_BUILD</key><string>{}</string>{env}</dict>
+<key>StandardOutPath</key><string>{log}</string><key>StandardErrorPath</key><string>{log}</string></dict></plist>"#,
+        xml(identity)
     )
 }
 pub(crate) fn stop() -> io::Result<()> {
@@ -148,6 +219,19 @@ pub(crate) fn stop() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_updates_use_a_different_job_and_do_not_run_catalog_sync() {
+        let config = Path::new("/cfg/herdr");
+        let state = Path::new("/state/herdr");
+        let text = updater_spec(Path::new("/Users/a&b/herdr"), config, state, "hash", &[]);
+        assert!(text.contains("dev.herdr.private-updates."));
+        assert!(!text.contains(&label(config, state)));
+        assert!(text.contains("<string>updates</string><string>worker</string>"));
+        assert!(text.contains("HERDR_UPDATE_SERVICE"));
+        assert!(!text.contains("HERDR_SYNC_SERVICE"));
+        assert!(text.contains("/Users/a&amp;b/herdr"));
+        assert!(!text.contains("/bin/sh"));
+    }
     #[test]
     fn launch_agent_uses_exact_argv_and_private_namespace_without_shell() {
         let text = spec(

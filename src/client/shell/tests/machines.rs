@@ -1327,3 +1327,16 @@ fn sync_badge_is_present_without_active_surface_and_disabled_when_mouse_is_off()
     state.compose(140, 48).unwrap();
     assert!(state.hits.sync_status.is_empty());
 }
+
+#[test]
+fn automatic_update_waits_for_dialogs_and_navigation_to_finish() {
+    let mut state = shell();
+    assert!(state.automatic_update_ready());
+    open(&mut state);
+    assert!(!state.automatic_update_ready());
+    state.overlay = None;
+    state.mode = ClientShellMode::Navigate;
+    assert!(!state.automatic_update_ready());
+    state.mode = ClientShellMode::Terminal;
+    assert!(state.automatic_update_ready());
+}

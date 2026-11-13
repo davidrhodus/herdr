@@ -32,6 +32,7 @@ mod image_files;
 mod input;
 mod loop_config;
 mod machine_setup;
+pub(crate) use machine_setup::tailscale;
 mod notifications;
 mod shell;
 mod shell_runtime;
@@ -403,6 +404,7 @@ fn run_client_with_mode(
 
     rt.shutdown_timeout(Duration::from_millis(100));
     crate::logging::shutdown("client");
+    crate::private_updates::restart_if_requested()?;
     Ok(())
 }
 
@@ -668,6 +670,7 @@ async fn run_client_loop(
     let mut next_surface_serial = 1_u64;
     let mut pending_activation: Option<endpoint::PendingEndpointActivation> = None;
     let mut scheduled_activation = None;
+    let mut private_update_pending = false;
     let mut pending_catalog: Option<Result<Vec<endpoint::SavedSshEndpoint>, String>> = None;
     if state.attach_escape.is_none() {
         sync_background::ensure_started();
@@ -675,6 +678,15 @@ async fn run_client_loop(
     }
     if state.shell.is_some() && !is_remote_client && state.attach_escape.is_none() {
         catalog_reload::watch_profiles(event_tx.clone(), should_quit.clone());
+        crate::private_updates::ensure_started();
+        crate::private_updates::start_worker(should_quit.clone(), false);
+        let update_tx = event_tx.clone();
+        crate::private_updates::watch(
+            move || {
+                let _ = update_tx.blocking_send(ClientLoopEvent::PrivateUpdateReady);
+            },
+            should_quit.clone(),
+        );
     }
 
     // This (foreground) client owns the prefix ASCII input-source switch
@@ -689,6 +701,17 @@ async fn run_client_loop(
     #[cfg(windows)]
     let mut stdin_open = true;
     while !should_quit.load(Ordering::Acquire) {
+        if private_update_pending
+            && pending_activation.is_none()
+            && state
+                .shell
+                .as_ref()
+                .is_some_and(|shell| shell.automatic_update_ready())
+        {
+            crate::private_updates::request_restart();
+            should_quit.store(true, Ordering::Release);
+            break;
+        }
         if pending_activation.is_none() {
             if let Some(reload) = pending_catalog.take() {
                 match reload {
@@ -874,6 +897,7 @@ async fn run_client_loop(
                     write_stream.resume_health(now);
                 }
             }
+            ClientLoopEvent::PrivateUpdateReady => private_update_pending = true,
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
             ClientLoopEvent::SyncStatus(view) => {
                 let repaint = state

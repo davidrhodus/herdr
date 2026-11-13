@@ -463,3 +463,56 @@ The client and server negotiate compatibility rather than requiring identical ve
 Updating a compatible client does not replace the running remote server or stop its agents. When you need new server-side behavior, update that server explicitly. Normal replacement asks before stopping the server and its pane processes.
 
 Live handoff is experimental and opt-in. For a supported server that needs replacement during standalone setup, you can explicitly add `--handoff` to `herdr --remote`; it is not needed for normal connections or authentication fixes. See [Update](/docs/install/#update) for restart and handoff choices, and [Session state and restore](/docs/session-state/) for what survives each operation.
+
+
+## Private automatic updates through Redie
+
+Private Mac builds can opt into signed automatic updates with one bootstrap:
+
+```sh
+cd ~/herdr
+rsync -azvp --exclude='.git' --exclude='target' redie:~/herdr/ ./
+cargo run --release -- updates enable
+~/.local/bin/herdr
+```
+
+After enabling, launch `herdr` normally. Both Macs check for a published build
+about once a minute using a dedicated private-update login job, even with their UIs closed. Older server-list sync jobs cannot replace this job. The UI provides a fallback when that job is unavailable; one worker owns automatic checks per state namespace. Enable reports success only after the expected binary and its updater confirm a fresh successful check. A running manager waits for its
+setup dialog or navigation mode to close, then detaches and reconnects using the
+updated executable. Runtime daemons and running terminal processes stay in place.
+The sync details view includes the private update status and installed build.
+Use `herdr updates status`, `check`, or `disable` to inspect, check immediately,
+or opt out without disabling server-list sync.
+
+The read-only Rust feed binds Redie's current Tailscale IP and serves only the
+signed current manifest and content-addressed binaries. Clients verify a public
+signing key pinned by the trusted source bootstrap, the exact signing namespace,
+binary checksum and length, release counter, Mac architecture, and compatible
+runtime/endpoint generations. Updates use no SSH credential; server-list keys
+remain limited to their existing catalog operations. The signing private key
+stays on the publishing Mac outside the repository. A previous executable is
+retained at `~/.local/bin/herdr.previous` for manual recovery. Incompatible
+runtime generations pause updating instead of stopping sessions.
+
+Publishing is explicit after validation; git pushes and source rsync alone do
+not distribute executable updates:
+
+```sh
+just build-linux-bundle
+python3 scripts/publish_private_update.py target/release/herdr
+```
+
+The manager includes the matching Linux payloads. The publisher checks that its
+source matches the build and uploads the complete immutable binary before
+atomically switching the signed current manifest. Existing publications are
+protected by a monotonically increasing release counter. Keep the prior signed
+artifacts available while clients may still be downloading them.
+
+
+On the feed host, `herdr updates peers` shows bounded client-reported diagnostics
+by the actual Tailscale source IP, including the installed/running build, whether
+checks are automatic, the last receipt age, and any reported error. Reports are
+observations, not authorization to install or execute anything. A plain manifest
+request alone is never treated as proof of installation. The feed accepts only
+bounded report bodies with an absolute deadline, in addition to its immutable
+artifact routes.

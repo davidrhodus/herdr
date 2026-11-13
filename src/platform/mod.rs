@@ -1088,3 +1088,10 @@ pub(crate) fn shared_ssh_control_path(
 
 #[cfg(unix)]
 pub(crate) use unix_common::{cancel_setup_process, SetupProcessGroup};
+
+#[cfg(unix)]
+#[path = "unix_private_updates.rs"]
+pub(crate) mod private_updates;
+#[cfg(not(unix))]
+#[path = "private_updates_unsupported.rs"]
+pub(crate) mod private_updates;

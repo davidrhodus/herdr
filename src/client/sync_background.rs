@@ -11,6 +11,9 @@ pub(crate) fn root() -> PathBuf {
     crate::config::state_dir().join("client")
 }
 fn installed_executable() -> io::Result<PathBuf> {
+    if let Some(path) = crate::private_updates::managed_executable() {
+        return Ok(path);
+    }
     let executable = std::env::current_exe()?;
     let stable = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -193,12 +196,14 @@ pub(crate) fn serve() -> io::Result<()> {
     if lease.try_lock().is_err() {
         return Ok(());
     }
+    crate::private_updates::ensure_started();
     let quit = Arc::new(AtomicBool::new(false));
     let binary = executable_fingerprint(&std::env::current_exe()?)?;
     catalog_sync::start_worker(quit.clone());
-    super::direct_sync::start_background(quit);
+    super::direct_sync::start_background(quit.clone());
+
     loop {
-        let value = serde_json::json!({"pid":std::process::id(),"heartbeat":now(),"version":crate::build_info::version(),"binary":binary});
+        let value = serde_json::json!({"pid":std::process::id(),"heartbeat":now(),"version":crate::build_info::version(),"binary":binary,"private_updates":true});
         super::endpoint::store_private_json(
             &root.join("sync-service-status.json"),
             &serde_json::to_vec(&value).map_err(io::Error::other)?,

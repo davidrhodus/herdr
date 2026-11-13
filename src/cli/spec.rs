@@ -36,6 +36,30 @@ pub(super) fn command() -> Command {
         .subcommand(channel_command())
         .subcommand(machine::command())
         .subcommand(sync_command())
+        .subcommand(
+            Command::new("updates")
+                .about("Signed private updates through Redie")
+                .subcommand(
+                    Command::new("enable").about("Enable automatic private updates on this Mac"),
+                )
+                .subcommand(Command::new("disable").about("Disable private updates"))
+                .subcommand(Command::new("status").about("Show private update status"))
+                .subcommand(
+                    Command::new("worker")
+                        .about("Run the private update service")
+                        .hide(true),
+                )
+                .subcommand(
+                    Command::new("peers")
+                        .about("Show private update reports received by this host"),
+                )
+                .subcommand(Command::new("check").about("Check for a signed private release now"))
+                .subcommand(
+                    Command::new("serve")
+                        .about("Serve signed private builds on a Tailscale address")
+                        .arg(Arg::new("address").required(true)),
+                ),
+        )
         .subcommand(server_command())
         .subcommand(api_command())
         .subcommand(workspace_command())
