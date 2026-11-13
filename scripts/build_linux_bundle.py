@@ -29,6 +29,14 @@ def source_id(root: Path) -> str:
         paths.update(path for path in (root / name).rglob("*") if path.is_file())
     paths.add(root / "scripts/build_linux_bundle.py")
     digest = hashlib.sha256()
+    # Automatic builders use a stable, toolchain-specific namespace so an
+    # isolated checkout/compiler change never reuses another binary's identity.
+    variant = os.environ.get("HERDR_BUILD_VARIANT", "")
+    if variant:
+        digest.update(b"herdr-build-variant-v1\0")
+        for value in (variant.encode(), str(root.resolve()).encode()):
+            digest.update(len(value).to_bytes(8, "big"))
+            digest.update(value)
     for path in sorted(paths):
         relative = path.relative_to(root)
         if any(part in ("target", ".git", "__pycache__") for part in relative.parts):

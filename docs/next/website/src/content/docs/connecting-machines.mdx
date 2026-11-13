@@ -494,8 +494,7 @@ stays on the publishing Mac outside the repository. A previous executable is
 retained at `~/.local/bin/herdr.previous` for manual recovery. Incompatible
 runtime generations pause updating instead of stopping sessions.
 
-Publishing is explicit after validation; git pushes and source rsync alone do
-not distribute executable updates:
+Manual publication remains available after validation:
 
 ```sh
 just build-linux-bundle
@@ -516,3 +515,50 @@ observations, not authorization to install or execute anything. A plain manifest
 request alone is never treated as proof of installation. The feed accepts only
 bounded report bodies with an absolute deadline, in addition to its immutable
 artifact routes.
+
+
+## Publish automatically after a private master push
+
+With the private build worker installed, `git push redie master` is the complete
+release action. Redie's post-receive hook queues the exact master commit. The
+publishing Mac fetches that commit into a separate build checkout, runs
+`just check` plus all-feature workspace tests, builds the manager with both
+Linux payloads, and signs and publishes the result. Both managers then install
+it through their existing automatic updater. Other branches and master deletion
+do not publish releases. Unpushed workspace edits are never part of a build.
+
+Install the worker once on the Mac holding the release signing key:
+
+```sh
+python3 scripts/private_build_worker.py install
+```
+
+This requires Rust, cargo-nextest, just, Bun, Node, Python 3.11+, and the Mac SDK on that Mac.
+The queue helper and post-receive hook are installed on Redie; no signing private
+key is copied there. Only trusted pushes to this private `master` should be
+accepted: Cargo build scripts, macros, and tests execute as the publishing Mac's
+user. This automation is not a sandbox for untrusted PRs or branches.
+
+When the Mac is asleep, offline, or logged out, pushes remain queued on Redie.
+When it returns, the newest master commit is built. Build caches persist between
+runs. A newer accepted push supersedes an in-progress older build; publication
+holds a Git reference transaction while checking the exact master commit and
+atomically switching the signed manifest. Failed checks leave the last good
+release active. Compiler/SDK/build-checkout variants get separate build IDs.
+
+Inspect the queue, current stage, last successful build, and failure details:
+
+```sh
+python3 scripts/private_build_worker.py status
+```
+
+After correcting an infrastructure problem, retry the current commit with:
+
+```sh
+python3 scripts/private_build_worker.py retry
+```
+
+A new master push automatically retries changed code. Signing/publication outages
+retry automatically; lint or test failures wait for a changed commit or an
+explicit retry. Logs live in `~/.local/state/herdr/private-build-worker/logs` on
+the publishing Mac. The existing checkout in `~/herdr` remains available for work.

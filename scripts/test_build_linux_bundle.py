@@ -1,4 +1,6 @@
 import tempfile
+import os
+from unittest import mock
 import unittest
 from pathlib import Path
 
@@ -26,6 +28,16 @@ class LinuxBundleTests(unittest.TestCase):
             source.write_text("first")
             (root / "src/new.rs").write_text("untracked")
             self.assertNotEqual(initial, bundle.source_id(root))
+
+    def test_builder_variants_and_checkout_locations_have_distinct_identities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for name in ("Cargo.toml","Cargo.lock","build.rs","scripts/build_linux_bundle.py"):
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text("source")
+            with mock.patch.dict(os.environ,{"HERDR_BUILD_VARIANT":"first"}):
+                first=bundle.source_id(root)
+            with mock.patch.dict(os.environ,{"HERDR_BUILD_VARIANT":"second"}):
+                self.assertNotEqual(first,bundle.source_id(root))
 
     def test_leaf_environment_cannot_embed_an_old_bundle_recursively(self):
         original = {
