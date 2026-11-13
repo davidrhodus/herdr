@@ -35,6 +35,15 @@ pub(super) fn command() -> Command {
         .subcommand(config_command())
         .subcommand(channel_command())
         .subcommand(machine::command())
+        .subcommand(
+            Command::new("cloud")
+                .about("Cloud instances in the TUI")
+                .subcommand(
+                    Command::new("console")
+                        .about("Open the client-local cloud setup panel")
+                        .hide(true),
+                ),
+        )
         .subcommand(sync_command())
         .subcommand(
             Command::new("updates")

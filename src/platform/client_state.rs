@@ -1,5 +1,19 @@
 use std::path::Path;
 
+pub(crate) fn create_private_state_directory(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match super::create_remote_private_dir(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    validate_private_key_path(path, true)
+}
+
 pub(crate) fn validate_private_key_path(path: &Path, directory: bool) -> std::io::Result<()> {
     let metadata = std::fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink()

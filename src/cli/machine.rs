@@ -424,6 +424,26 @@ fn check_default_label(catalog: &EndpointCatalog, label: &str) -> Result<(), Str
     Ok(())
 }
 
+fn batch_host_already_saved(
+    profiles: &[crate::client::endpoint::SavedSshEndpoint],
+    target: &str,
+    raw: &str,
+) -> std::io::Result<bool> {
+    if raw.len() > 4096 {
+        return Err(std::io::Error::other(
+            "Selected host identity exceeds limit",
+        ));
+    }
+    let identity: crate::remote::host_identity::HostIdentity =
+        serde_json::from_str(raw).map_err(std::io::Error::other)?;
+    identity.validate().map_err(std::io::Error::other)?;
+    if !identity.matches_target(target) {
+        return Err(std::io::Error::other(
+            "Selected host identity does not match setup target",
+        ));
+    }
+    Ok(profiles.iter().any(|p| identity.matches_target(&p.target)))
+}
 fn batch_reuse(
     profiles: &[crate::client::endpoint::SavedSshEndpoint],
     target: &str,
@@ -454,6 +474,13 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    if let Some(raw) = std::env::var_os(crate::remote::host_identity::SETUP_HOST_ENV) {
+        if batch_host_already_saved(&load_catalog()?.ssh, &target, &raw.to_string_lossy())? {
+            crate::remote::setup_progress::skipped_existing();
+            println!("Already added; skipped without SSH setup.");
+            return Ok(0);
+        }
+    }
     if std::env::var_os(crate::remote::device_identity::REUSE_EXISTING_ENV).as_deref()
         == Some(std::ffi::OsStr::new("1"))
     {
@@ -766,11 +793,11 @@ fn one_profile_id(args: &[String], usage: &str) -> std::io::Result<Option<Profil
     }
 }
 
-fn load_catalog() -> std::io::Result<EndpointCatalog> {
+pub(super) fn load_catalog() -> std::io::Result<EndpointCatalog> {
     EndpointCatalog::load().map_err(std::io::Error::other)
 }
 
-fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
+pub(super) fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
     catalog.store_profiles().map_err(std::io::Error::other)?;
     // The local change is durable even when the sync peer is unavailable.
     if let Err(error) = crate::client::endpoint::catalog_sync::sync_once() {
@@ -783,6 +810,32 @@ fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn final_bulk_guard_matches_other_accounts_and_alternate_node_addresses() {
+        let identity = crate::remote::host_identity::HostIdentity {
+            dns: Some("build.tailnet.ts.net".into()),
+            ips: vec![
+                "100.90.0.1".parse().unwrap(),
+                "fd7a:115c:a1e0::1".parse().unwrap(),
+            ],
+        };
+        let raw = serde_json::to_string(&identity).unwrap();
+        for target in [
+            "bob@BUILD.TAILNET.TS.NET.",
+            "ssh://root@100.90.0.1:2022",
+            "ssh://bob@[fd7a:115c:a1e0::1]:2222",
+        ] {
+            let mut saved =
+                crate::client::endpoint::SavedSshEndpoint::new("Existing", target, "other")
+                    .unwrap();
+            saved.enabled = false;
+            assert!(
+                batch_host_already_saved(&[saved], "alice@build.tailnet.ts.net", &raw).unwrap()
+            );
+        }
+        assert!(!batch_host_already_saved(&[], "alice@build.tailnet.ts.net", &raw).unwrap());
+        assert!(batch_host_already_saved(&[], "alice@unrelated-host", &raw).is_err());
+    }
     #[test]
     fn interrupted_batch_add_reuses_only_an_unambiguous_current_entry() {
         let profile =

@@ -847,6 +847,7 @@ pub(super) fn ssh_interactive_command(
             .manage_ssh_config
     {
         let mut command = Command::new("ssh");
+        super::device_identity::apply_host_keys(&mut command, target);
         if let Some(path) = super::device_identity::get(target) {
             command.arg("-i").arg(path);
         }
@@ -891,7 +892,9 @@ fn authentication_command_with_config(
     remote_command: &str,
 ) -> SshAuthenticationCommand {
     let mut command = Command::new("ssh");
-    apply_managed_ssh_options(&mut command, Some(&config.options));
+    if !super::device_identity::apply_host_keys(&mut command, target) {
+        apply_managed_ssh_options(&mut command, Some(&config.options));
+    }
     if let Some(path) = super::device_identity::get(target) {
         command.arg("-i").arg(path);
     }
@@ -1153,7 +1156,9 @@ impl RemoteSsh {
                 "ControlPersist=no",
             ]);
         }
-        apply_managed_ssh_options(&mut command, self.options());
+        if !super::device_identity::apply_host_keys(&mut command, &self.target) {
+            apply_managed_ssh_options(&mut command, self.options());
+        }
         if let Some(path) = &self.identity_file {
             command.arg("-i").arg(path);
         }
@@ -1162,7 +1167,9 @@ impl RemoteSsh {
 
     fn scp_command(&self) -> Command {
         let mut command = Command::new("scp");
-        apply_managed_scp_options(&mut command, self.options());
+        if !super::device_identity::apply_host_keys(&mut command, &self.target) {
+            apply_managed_scp_options(&mut command, self.options());
+        }
         if let Some(path) = &self.identity_file {
             command.arg("-i").arg(path);
         }
@@ -3572,7 +3579,9 @@ fn bridge_connection(
     identity: Option<&Path>,
 ) -> io::Result<()> {
     let mut command = Command::new("ssh");
-    apply_managed_ssh_options(&mut command, ssh_options);
+    if !super::device_identity::apply_host_keys(&mut command, target) {
+        apply_managed_ssh_options(&mut command, ssh_options);
+    }
     if let Some(identity) = identity {
         command.arg("-i").arg(identity);
     }

@@ -28,7 +28,6 @@ impl State {
 pub(in crate::client::shell) struct Item {
     pub device: TailscaleDevice,
     pub operation: Option<Operation>,
-    pub expected: Option<SavedSshEndpoint>,
     pub state: State,
     pub detail: String,
     pub screen: Option<Buffer>,
@@ -55,7 +54,6 @@ impl Batch {
             let mut item = Item {
                 device: chosen.clone(),
                 operation: None,
-                expected: None,
                 state: State::Skipped,
                 detail: "Not online in the refreshed list; select it again when available.".into(),
                 screen: None,
@@ -66,20 +64,13 @@ impl Batch {
                 form.target = device.target().ok_or("Device has no SSH address")?;
                 form.label = device.name.clone();
                 form.destination()?;
-                let saved = tailscale_browser::existing_profiles(
-                    &manager.profiles,
-                    device,
-                    form.username.trim(),
-                );
-                if saved.is_empty() {
-                    item.operation = Some(Operation::AddChecked(form));
-                } else if saved.len() == 1 && saved[0].enabled {
-                    item.expected = Some(saved[0].clone());
-                    item.operation = Some(Operation::ReconnectChecked(saved[0].clone()));
+                if tailscale_browser::already_added(&manager.profiles, device) {
+                    item.detail = "Already added; skipped without reconnecting.".into();
                 } else {
-                    item.detail =
-                        "Saved server is disabled or has several sessions; choose it from Servers."
-                            .into();
+                    item.operation = Some(Operation::AddChecked(
+                        form,
+                        tailscale_browser::host_identity(device),
+                    ));
                 }
                 if item.operation.is_some() {
                     item.state = State::Pending;
@@ -106,32 +97,10 @@ impl Batch {
             if item.state != State::Pending {
                 continue;
             }
-            if let Some(expected) = &item.expected {
-                if !profiles.iter().any(|p| {
-                    p.id == expected.id
-                        && p.target == expected.target
-                        && p.session == expected.session
-                        && p.enabled
-                }) {
-                    item.state = State::Failed;
-                    item.detail = "Saved server changed; review it before retrying.".into();
-                    continue;
-                }
-            } else if let Some(Operation::AddChecked(form)) = &item.operation {
-                let saved = tailscale_browser::existing_profiles(
-                    profiles,
-                    &item.device,
-                    form.username.trim(),
-                );
-                if saved.len() == 1 && saved[0].enabled {
-                    item.expected = Some(saved[0].clone());
-                    item.operation = Some(Operation::ReconnectChecked(saved[0].clone()));
-                } else if !saved.is_empty() {
-                    item.state = State::Skipped;
-                    item.detail =
-                        "Server list changed; choose the saved server from Servers.".into();
-                    continue;
-                }
+            if tailscale_browser::already_added(profiles, &item.device) {
+                item.state = State::Skipped;
+                item.detail = "Already added while queued; skipped without reconnecting.".into();
+                continue;
             }
             let Some(operation) = item.operation.clone() else {
                 item.state = State::Skipped;
@@ -173,6 +142,15 @@ impl Batch {
             {
                 old.screen = None;
             }
+        }
+        self.done = self.items.iter().all(|i| i.state != State::Pending);
+    }
+    pub fn skipped(&mut self) {
+        if let Some(index) = self.active.take() {
+            let item = &mut self.items[index];
+            item.state = State::Skipped;
+            item.detail = "Already added; skipped without SSH setup.".into();
+            item.screen = None;
         }
         self.done = self.items.iter().all(|i| i.state != State::Pending);
     }

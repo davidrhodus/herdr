@@ -3,6 +3,7 @@ mod attach;
 mod bundle;
 pub(crate) mod device_identity;
 mod host;
+pub(crate) mod host_identity;
 pub(crate) mod key_setup;
 mod process;
 mod restart_policy;

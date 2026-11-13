@@ -21,6 +21,7 @@ macro_rules! println {
 
 pub(crate) mod agent;
 mod api;
+mod cloud;
 mod completion;
 mod integration;
 mod machine;
@@ -127,6 +128,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "config" => run_config_command(&args[2..])?,
         "channel" => run_channel_command(&args[2..])?,
         "machine" => machine::run_machine_command(&args[2..])?,
+        "cloud" => cloud::run(&args[2..])?,
         "terminal-import" => terminal_import::run(&args[2..])?,
         "sync" => sync::run(&args[2..])?,
         "updates" => crate::private_updates::run(&args[2..])?,

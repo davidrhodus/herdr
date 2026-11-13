@@ -100,8 +100,9 @@ impl AddServer {
 }
 #[derive(Clone, Debug)]
 pub(crate) enum Operation {
+    Cloud,
     Add(AddServer),
-    AddChecked(AddServer),
+    AddChecked(AddServer, crate::remote::host_identity::HostIdentity),
     Reconnect(String),
     ReconnectChecked(crate::client::endpoint::SavedSshEndpoint),
     Update(String),
@@ -204,6 +205,9 @@ impl std::fmt::Debug for Command {
 }
 #[derive(Debug)]
 pub(crate) enum Event {
+    Skipped {
+        id: u64,
+    },
     TerminalScan {
         id: u64,
         request: u64,
@@ -406,9 +410,16 @@ fn run(commands: mpsc::Receiver<Command>, events: mpsc::SyncSender<Event>) {
 fn builder(operation: &Operation) -> Result<CommandBuilder, String> {
     let mut command = CommandBuilder::new(std::env::current_exe().map_err(|e| e.to_string())?);
     match operation {
-        Operation::Add(form) | Operation::AddChecked(form) => {
-            if matches!(operation, Operation::AddChecked(_)) {
-                command.env(crate::remote::device_identity::REUSE_EXISTING_ENV, "1");
+        Operation::Cloud => {
+            command.args(["cloud", "console"]);
+        }
+        Operation::Add(form) | Operation::AddChecked(form, _) => {
+            if let Operation::AddChecked(_, identity) = operation {
+                identity.validate()?;
+                command.env(
+                    crate::remote::host_identity::SETUP_HOST_ENV,
+                    serde_json::to_string(identity).map_err(|e| e.to_string())?,
+                );
             }
             let target = form.destination()?;
             if !form.identity.trim().is_empty() {
@@ -635,6 +646,8 @@ fn session_with_command(
             progress_buffer.drain(..=end);
             if let Some(phase) = crate::remote::setup_progress::Phase::parse(&line) {
                 let _ = events.try_send(Event::Phase { id, phase });
+            } else if line == crate::remote::setup_progress::SKIPPED_EXISTING {
+                let _ = events.send(Event::Skipped { id });
             } else if let Ok(prompt) =
                 serde_json::from_str::<crate::remote::setup_progress::Approval>(&line)
             {
@@ -766,6 +779,23 @@ fn session_with_command(
             }
             let (buffer, cursor) = snapshot(&terminal, &mut render)?;
             let _ = events.send(Event::Screen { id, buffer, cursor });
+            // A fast successful skip may exit between the normal progress read
+            // and try_wait. Drain its private marker before reporting completion.
+            let mut final_progress = Vec::new();
+            std::io::Read::by_ref(&mut progress)
+                .take(65536)
+                .read_to_end(&mut final_progress)
+                .map_err(|e| e.to_string())?;
+            progress_buffer.extend(final_progress);
+            if progress_buffer.len() > 65536 {
+                return Err("Invalid setup progress message".into());
+            }
+            if progress_buffer
+                .split(|b| *b == b'\n')
+                .any(|line| line == crate::remote::setup_progress::SKIPPED_EXISTING.as_bytes())
+            {
+                let _ = events.send(Event::Skipped { id });
+            }
             let _ = events.send(Event::Finished {
                 id,
                 success: status.success(),

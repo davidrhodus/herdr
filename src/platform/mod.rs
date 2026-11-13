@@ -579,7 +579,8 @@ pub(crate) mod terminal_import;
 #[path = "terminal_import_unsupported.rs"]
 pub(crate) mod terminal_import;
 pub(crate) use client_state::{
-    create_private_state_file, replace_file, sync_parent_directory, validate_private_key_path,
+    create_private_state_directory, create_private_state_file, replace_file, sync_parent_directory,
+    validate_private_key_path,
 };
 
 #[cfg(target_os = "macos")]

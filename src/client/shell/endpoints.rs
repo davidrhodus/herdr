@@ -49,6 +49,7 @@ impl ClientShellState {
         self.machine_profiles = profiles.to_vec();
         if let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() {
             manager.profiles = profiles.to_vec();
+            manager.tailscale.refresh_added(profiles);
         }
         let mut next = Vec::with_capacity(profiles.len().saturating_add(1));
         let local = self

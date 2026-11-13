@@ -45,6 +45,7 @@ pub(super) struct Manager {
     pub advanced: bool,
     pub setup_key: bool,
     pub quick_add: bool,
+    pub setup_skipped: bool,
     pub batch: Option<batch::Batch>,
     pub suggestions: Vec<String>,
     pub tailscale: tailscale_browser::Browser,
@@ -67,6 +68,7 @@ pub(super) struct Manager {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Hit {
+    Cloud,
     Hint,
     ManagerSync,
     RefreshSync,
@@ -86,6 +88,7 @@ pub(super) enum Hit {
     QuickDevice(usize, u64),
     ToggleDevice(usize, u64),
     AddSelected,
+    SelectAllOnline(u64),
     ClearSelected,
     RetryBatch,
     BatchItem(usize),
@@ -134,6 +137,7 @@ impl Manager {
             advanced: false,
             setup_key: true,
             quick_add: false,
+            setup_skipped: false,
             batch: None,
             suggestions: Vec::new(),
             tailscale: Default::default(),
@@ -332,6 +336,7 @@ impl ClientShellState {
             manager.batch = None;
         }
         manager.id = machine_setup::next_id();
+        manager.setup_skipped = false;
         manager.tailscale.loading = false;
         manager.last_operation = Some(operation.clone());
         manager.import_workspace = None;
@@ -439,6 +444,7 @@ impl ClientShellState {
                             .filter(|device| device.online == Some(true))
                             .collect();
                         manager.tailscale.error = None;
+                        manager.tailscale.refresh_added(&manager.profiles);
                         if matches!(manager.page, Page::Tailscale { .. }) {
                             manager.selected =
                                 selected
@@ -478,48 +484,35 @@ impl ClientShellState {
                 manager.screen = Some(buffer);
                 manager.cursor = cursor;
             }
+            Event::Skipped { id } if id == manager.id => {
+                manager.setup_skipped = true;
+            }
             Event::Finished {
                 id,
                 success,
                 message,
             } if id == manager.id && manager.batch.as_ref().is_some_and(|b| b.active.is_some()) => {
-                let retry = if success {
-                    manager
-                        .batch
-                        .as_ref()
-                        .and_then(|b| b.active.and_then(|n| b.items[n].expected.as_ref()))
-                        .filter(|p| {
-                            self.machine_profiles.iter().any(|current| {
-                                current.id == p.id
-                                    && current.target == p.target
-                                    && current.session == p.session
-                                    && current.enabled
-                            })
-                        })
-                        .map(|p| p.id.clone())
-                } else {
-                    None
-                };
                 if let Some(batch) = manager.batch.as_mut() {
-                    batch.finish(
-                        success,
-                        message,
-                        if success {
-                            None
-                        } else {
-                            manager
-                                .screen
-                                .as_ref()
-                                .filter(|s| s.area.width <= 160 && s.area.height <= 60)
-                                .cloned()
-                        },
-                    );
+                    if success && manager.setup_skipped {
+                        batch.skipped();
+                    } else {
+                        batch.finish(
+                            success,
+                            message,
+                            if success {
+                                None
+                            } else {
+                                manager
+                                    .screen
+                                    .as_ref()
+                                    .filter(|s| s.area.width <= 160 && s.area.height <= 60)
+                                    .cloned()
+                            },
+                        );
+                    }
                 }
                 manager.page = Page::BatchResults;
                 manager.error = None;
-                if let Some(profile) = retry {
-                    self.retry_machine(&ClientEndpointId::Ssh(profile));
-                }
             }
             Event::Finished {
                 id,
@@ -540,6 +533,16 @@ impl ClientShellState {
                             .iter()
                             .find(|profile| profile.id.as_str() == id)
                             .map(|profile| profile.id.clone()),
+                        Some(Operation::ReconnectChecked(profile)) => self
+                            .machine_profiles
+                            .iter()
+                            .find(|p| {
+                                p.id == profile.id
+                                    && p.target == profile.target
+                                    && p.session == profile.session
+                                    && p.enabled
+                            })
+                            .map(|p| p.id.clone()),
                         _ => None,
                     }
                 } else {
@@ -579,6 +582,7 @@ impl ClientShellState {
                     self.overlay=None;outcome.repaint=true;return;
                 } else {manager.error=Some("Server entry changed; open the import workspace on the original server.".into());}
             },
+            Hit::Cloud => { self.overlay=Some(ClientShellOverlay::Machines(manager)); self.run_machine(Operation::Cloud,outcome); return; },
             Hit::Hint | Hit::BatchSummary | Hit::BatchDetail(_) => {},
             Hit::ManagerSync => {manager.page=Page::Managers;manager.error=manager.direct.error.clone();outcome.actions.push(ClientShellAction::MachineManager(Command::Direct {id:manager.id,action:crate::client::direct_sync::Action::Discover}));},
             Hit::FindManagers|Hit::SyncManagers => {let action=if hit==Hit::FindManagers{crate::client::direct_sync::Action::Discover}else{crate::client::direct_sync::Action::SyncNow};outcome.actions.push(ClientShellAction::MachineManager(Command::Direct{id:manager.id,action}));},
@@ -595,6 +599,7 @@ impl ClientShellState {
             Hit::ToggleDevice(index,revision) => if manager.quick_add && matches!(manager.page,Page::Tailscale{join:false}) {
                 if let Err(error)=manager.tailscale.toggle(index,revision) {manager.error=Some(error);} else {manager.error=None;}
             },
+            Hit::SelectAllOnline(revision) => if manager.quick_add && matches!(manager.page,Page::Tailscale{join:false}) {manager.tailscale.select_all(revision,&manager.profiles);manager.error=None;},
             Hit::AddSelected => if manager.quick_add && matches!(manager.page,Page::Tailscale{join:false}) {
                 match batch::Batch::plan(&manager) {Ok(batch)=>{manager.batch=Some(batch);manager.page=Page::BatchResults;manager.error=None;},Err(error)=>manager.error=Some(error)}
             },
@@ -617,7 +622,7 @@ impl ClientShellState {
                         let device=&manager.tailscale.devices[index];
                         if manager.fields[1].is_empty() { manager.fields[1]=device.name.as_str().into(); }
                         let existing=tailscale_browser::existing_profiles(&manager.profiles,device,manager.fields[5].trim());
-                        if existing.len()==1 { if existing[0].enabled { operation=Some(Operation::Reconnect(existing[0].id.to_string())); } else {manager.page=Page::Manage(existing[0].clone());manager.error=Some("This saved server is disabled. Enable it here to reconnect.".into());} }
+                        if existing.len()==1 { if existing[0].enabled { operation=Some(Operation::ReconnectChecked(existing[0].clone())); } else {manager.page=Page::Manage(existing[0].clone());manager.error=Some("This saved server is disabled. Enable it here to reconnect.".into());} }
                         else if existing.len()>1 { manager.page=Page::Servers;manager.error=Some("This device already has several saved sessions. Choose an existing server from Servers.".into()); }
                         else { match manager.form().destination() { Ok(_)=>operation=Some(Operation::Add(manager.form())), Err(error)=>manager.error=Some(error) } }
                     }
@@ -1160,7 +1165,13 @@ pub(super) fn menu_actions(manager: &Manager) -> Vec<Hit> {
                     Hit::TailscaleDevice(index)
                 }
             })
+            .chain(
+                manager
+                    .quick_add
+                    .then_some(Hit::SelectAllOnline(manager.tailscale.revision)),
+            )
             .chain(manager.quick_add.then_some(Hit::AddSelected))
+            .chain(manager.quick_add.then_some(Hit::Cloud))
             .chain(
                 (manager.quick_add && !manager.tailscale.selected.is_empty())
                     .then_some(Hit::ClearSelected),
@@ -1183,7 +1194,7 @@ pub(super) fn menu_actions(manager: &Manager) -> Vec<Hit> {
             .unwrap_or_default(),
         Page::BatchLog(_) => vec![Hit::Back],
         Page::Servers => [
-            vec![Hit::Add, Hit::Sync],
+            vec![Hit::Add, Hit::Cloud, Hit::Sync],
             (0..manager.profiles.len()).map(Hit::Server).collect(),
         ]
         .concat(),
@@ -1369,6 +1380,7 @@ pub(super) fn render(
             }
             Page::Servers => {
                 row("＋ Add server", Hit::Add, false);
+                row("☁ Cloud instances · AWS / Google Cloud", Hit::Cloud, false);
                 let sync_label = if manager.direct.incoming.is_empty() {
                     "⇄ Server-list sync".into()
                 } else {
@@ -1709,7 +1721,11 @@ pub(super) fn render(
             put_text(buffer,inner.x,y,inner.width,"Connecting… SSH authentication, installation approval and session selection stay here.",normal);
         }
     }
-    if let Some(error) = &manager.error {
+    if let Some(error) = manager
+        .error
+        .as_ref()
+        .filter(|_| !matches!(manager.page, Page::Tailscale { .. }))
+    {
         put_text(
             buffer,
             inner.x,

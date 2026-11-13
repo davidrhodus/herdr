@@ -468,7 +468,14 @@ fn long_machine_and_sync_lists_scroll_selected_targets_into_view() {
     state.set_endpoint_catalog(&profiles);
     let mut outcome = ClientShellInput::default();
     state.open_machine_manager(&mut outcome);
-    for _ in 0..65 {
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    let last = super::super::machine_manager::menu_actions(manager)
+        .iter()
+        .position(|h| *h == Hit::Server(63))
+        .unwrap();
+    for _ in 0..last {
         press(&mut state, KeyCode::Down);
     }
     state.compose(80, 22).unwrap();
@@ -1459,7 +1466,9 @@ fn quick_add_reuses_matching_saved_profile_but_never_overrides_edited_username()
             panic!("{:?}", outcome.actions)
         };
         if username == "you" {
-            assert!(matches!(operation,Operation::Reconnect(id) if id==saved.id.as_str()));
+            assert!(
+                matches!(operation,Operation::ReconnectChecked(profile) if profile.id==saved.id)
+            );
         } else {
             let Operation::Add(form) = operation else {
                 panic!()
@@ -1670,7 +1679,7 @@ fn batch_setup_runs_sequentially_continues_after_failure_and_retries_only_failed
     let mut retry = ClientShellInput::default();
     state.machine_action(Hit::RetryBatch, &mut retry);
     assert!(
-        matches!(retry.actions.as_slice(),[ClientShellAction::MachineManager(Command::Run{operation:Operation::AddChecked(form),..})] if form.target=="100.90.0.2")
+        matches!(retry.actions.as_slice(),[ClientShellAction::MachineManager(Command::Run{operation:Operation::AddChecked(form,_),..})] if form.target=="100.90.0.2")
     );
     let id = run_id(&retry);
     state.receive_machine_event(Event::Finished {
@@ -1732,25 +1741,31 @@ fn stopping_a_batch_during_approval_keeps_successes_and_never_launches_pending_s
     assert!(state.take_next_machine_batch_command().is_none());
 }
 #[test]
-fn batch_username_is_frozen_and_changed_saved_profile_is_not_retargeted() {
+fn batch_username_is_frozen_and_newly_saved_servers_are_skipped() {
     let mut state = shell();
-    let saved = SavedSshEndpoint::new("Saved build", "alice@100.90.0.2", "main").unwrap();
-    state.machine_profiles = vec![saved.clone()];
     select_devices(&mut state, batch_devices());
+    if let Some(ClientShellOverlay::Machines(manager)) = &mut state.overlay {
+        manager.fields[5] = "alice".into();
+    }
     let mut start = ClientShellInput::default();
     state.machine_action(Hit::AddSelected, &mut start);
     let first = run_id(&start);
     if let Some(ClientShellOverlay::Machines(manager)) = &mut state.overlay {
         manager.fields[5] = "bob".into();
     }
-    state.machine_profiles[0].target = "alice@different-host".into();
+    state.set_endpoint_catalog(&[SavedSshEndpoint::new(
+        "Saved meanwhile",
+        "bob@100.90.0.2",
+        "other",
+    )
+    .unwrap()]);
     state.receive_machine_event(Event::Finished {
         id: first,
         success: true,
         message: "Ready".into(),
     });
     let Some(Command::Run {
-        operation: Operation::AddChecked(form),
+        operation: Operation::AddChecked(form, _),
         ..
     }) = state.take_next_machine_batch_command()
     else {
@@ -1763,7 +1778,7 @@ fn batch_username_is_frozen_and_changed_saved_profile_is_not_retargeted() {
     };
     assert_eq!(
         manager.batch.as_ref().unwrap().items[1].state.label(),
-        "Failed"
+        "Skipped"
     );
 }
 
@@ -1840,37 +1855,50 @@ fn batch_results_do_not_interfere_with_a_later_single_server_setup() {
 }
 
 #[test]
-fn successful_batch_reconnect_immediately_retries_endpoint_but_failure_or_changed_identity_does_not(
-) {
-    for (success, changed) in [(true, false), (false, false), (true, true)] {
+fn select_all_skips_saved_nodes_across_accounts_and_disabled_profiles() {
+    for enabled in [true, false] {
         let mut state = shell();
-        let saved = SavedSshEndpoint::new("Saved build", "alice@100.90.0.1", "main").unwrap();
-        state.set_endpoint_catalog(std::slice::from_ref(&saved));
-        state.set_endpoint_status(
-            &ClientEndpointId::Ssh(saved.id.clone()),
-            ClientEndpointStatus::Attention,
-        );
+        let mut saved =
+            SavedSshEndpoint::new("Saved build", "ssh://bob@[fd7a:115c:a1e0::1]:2222", "other")
+                .unwrap();
+        saved.enabled = enabled;
+        state.set_endpoint_catalog(&[saved]);
+        let (id, request) = quick_add(&mut state);
         let mut devices = batch_devices();
-        devices.truncate(1);
-        select_devices(&mut state, devices);
-        let mut start = ClientShellInput::default();
-        state.machine_action(Hit::AddSelected, &mut start);
-        if changed {
-            state.machine_profiles[0].target = "alice@another-host".into();
-        }
-        state.receive_machine_event(Event::Finished {
-            id: run_id(&start),
-            success,
-            message: "Result".into(),
+        devices[0].ips.push("fd7a:115c:a1e0::1".parse().unwrap());
+        devices[2].online = Some(false);
+        state.receive_machine_event(Event::Tailscale {
+            id,
+            request,
+            result: Ok(devices),
         });
-        let retries = state.take_machine_retries();
-        if success && !changed {
-            assert_eq!(retries, vec![ClientEndpointId::Ssh(saved.id)]);
-        } else {
-            assert!(retries.is_empty());
-        }
+        let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+            panic!()
+        };
+        let revision = manager.tailscale.revision;
+        let mut selection = ClientShellInput::default();
+        state.machine_action(Hit::SelectAllOnline(revision), &mut selection);
+        assert!(selection.actions.is_empty());
+        let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+            panic!()
+        };
+        assert_eq!(manager.tailscale.selected.len(), 1);
+        assert_eq!(
+            manager.tailscale.selected.values().next().unwrap().name,
+            "Build 2"
+        );
+        let text = state
+            .compose(100, 36)
+            .unwrap()
+            .cells
+            .iter()
+            .map(|c| c.symbol.as_str())
+            .collect::<String>();
+        assert!(text.contains("Select all online"));
+        assert!(text.contains("added"));
     }
 }
+
 #[test]
 fn batch_checkboxes_summary_and_retained_failure_output_are_visible() {
     let mut state = shell();
@@ -1925,5 +1953,124 @@ fn batch_checkboxes_summary_and_retained_failure_output_are_visible() {
     press(&mut state, KeyCode::Esc);
     assert!(
         matches!(&state.overlay,Some(ClientShellOverlay::Machines(manager)) if matches!(manager.page,Page::BatchResults))
+    );
+}
+
+#[test]
+fn select_all_respects_search_and_is_idempotent_and_never_connects() {
+    let mut state = shell();
+    let (id, request) = quick_add(&mut state);
+    state.receive_machine_event(Event::Tailscale {
+        id,
+        request,
+        result: Ok(batch_devices()),
+    });
+    state.handle_raw_events(vec![RawInputEvent::Text(TextCommit::new("Build 2"))]);
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    let revision = manager.tailscale.revision;
+    for _ in 0..2 {
+        let mut outcome = ClientShellInput::default();
+        state.machine_action(Hit::SelectAllOnline(revision), &mut outcome);
+        assert!(outcome.actions.is_empty());
+    }
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(manager.tailscale.selected.len(), 1);
+    assert_eq!(
+        manager.tailscale.selected.values().next().unwrap().name,
+        "Build 2"
+    );
+}
+#[test]
+fn a_last_moment_child_skip_is_never_counted_ready_or_advanced_before_completion() {
+    let mut state = shell();
+    select_devices(&mut state, batch_devices());
+    let mut start = ClientShellInput::default();
+    state.machine_action(Hit::AddSelected, &mut start);
+    let id = run_id(&start);
+    state.receive_machine_event(Event::Skipped { id });
+    assert!(state.take_next_machine_batch_command().is_none());
+    state.receive_machine_event(Event::Finished {
+        id,
+        success: true,
+        message: "Skipped".into(),
+    });
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(
+        manager.batch.as_ref().unwrap().items[0].state.label(),
+        "Skipped"
+    );
+    assert!(manager.batch.as_ref().unwrap().summary().starts_with("0/"));
+    assert!(matches!(
+        state.take_next_machine_batch_command(),
+        Some(Command::Run { .. })
+    ));
+}
+
+#[test]
+fn select_all_is_bounded_and_announces_remaining_devices() {
+    let mut state = shell();
+    let (id, request) = quick_add(&mut state);
+    let sample = batch_devices().remove(0);
+    let devices = (0..40)
+        .map(|n| {
+            let mut d = sample.clone();
+            d.id = Some(format!("node-{n}"));
+            d.name = format!("Build {n}");
+            d.dns = Some(format!("build-{n}.tail.example"));
+            d
+        })
+        .collect();
+    state.receive_machine_event(Event::Tailscale {
+        id,
+        request,
+        result: Ok(devices),
+    });
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    let revision = manager.tailscale.revision;
+    let mut out = ClientShellInput::default();
+    state.machine_action(Hit::SelectAllOnline(revision), &mut out);
+    assert!(out.actions.is_empty());
+    let Some(ClientShellOverlay::Machines(manager)) = &state.overlay else {
+        panic!()
+    };
+    assert_eq!(manager.tailscale.selected.len(), 32);
+    assert!(manager
+        .tailscale
+        .notice
+        .as_ref()
+        .unwrap()
+        .contains("8 more"));
+}
+
+#[test]
+fn cloud_entry_opens_only_an_owned_client_setup_panel() {
+    let mut state = shell();
+    quick_add(&mut state);
+    state.compose(120, 42).unwrap();
+    assert!(state
+        .hits
+        .machine_actions
+        .iter()
+        .any(|(_, hit)| *hit == Hit::Cloud));
+    let mut outcome = ClientShellInput::default();
+    state.machine_action(Hit::Cloud, &mut outcome);
+    assert!(outcome.requests.is_empty());
+    assert!(outcome.actions.iter().any(|a| matches!(
+        a,
+        ClientShellAction::MachineManager(Command::Run {
+            operation: Operation::Cloud,
+            ..
+        })
+    )));
+    assert!(
+        matches!(&state.overlay,Some(ClientShellOverlay::Machines(m)) if matches!(m.page,Page::Running))
     );
 }

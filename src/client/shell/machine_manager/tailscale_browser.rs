@@ -11,6 +11,8 @@ pub(in crate::client::shell) struct Browser {
     pub error: Option<String>,
     pub query: TextEditor,
     pub selected: std::collections::BTreeMap<String, TailscaleDevice>,
+    pub added: std::collections::BTreeSet<String>,
+    pub notice: Option<String>,
 }
 impl Browser {
     pub fn matching_indices(&self) -> Vec<usize> {
@@ -32,6 +34,49 @@ impl Browser {
             .collect()
     }
 
+    pub fn refresh_added(&mut self, profiles: &[SavedSshEndpoint]) {
+        self.added = self
+            .devices
+            .iter()
+            .filter(|d| already_added(profiles, d))
+            .filter_map(device_key)
+            .collect();
+        self.selected
+            .retain(|key, device| !self.added.contains(key) && !already_added(profiles, device));
+    }
+    pub fn select_all(&mut self, revision: u64, profiles: &[SavedSshEndpoint]) {
+        if self.loading || revision != self.revision {
+            return;
+        }
+        self.refresh_added(profiles);
+        let mut saved = 0;
+        let mut limited = 0;
+        for index in self.matching_indices() {
+            let device = &self.devices[index];
+            let Some(key) = device_key(device) else {
+                continue;
+            };
+            if self.added.contains(&key) {
+                saved += 1;
+                continue;
+            }
+            if self.selected.contains_key(&key) {
+                continue;
+            }
+            if self.selected.len() >= super::batch::LIMIT {
+                limited += 1;
+                continue;
+            }
+            self.selected.insert(key, device.clone());
+        }
+        self.notice = Some(if limited > 0 {
+            format!("Skipped {saved} added · {limited} more exceed the 32-server limit")
+        } else if self.selected.is_empty() {
+            "No new online devices match this search".into()
+        } else {
+            format!("Skipped {saved} already added · matching new devices selected")
+        });
+    }
     pub fn toggle(&mut self, index: usize, revision: u64) -> Result<(), String> {
         if self.loading || revision != self.revision || !self.matching_indices().contains(&index) {
             return Ok(());
@@ -40,6 +85,12 @@ impl Browser {
             return Ok(());
         };
         let key = device_key(device).ok_or("Device has no usable identity")?;
+        if self.added.contains(&key) {
+            self.selected.remove(&key);
+            self.notice = Some("Already added; left unchanged".into());
+            return Ok(());
+        }
+        self.notice = None;
         if self.selected.remove(&key).is_none() {
             if self.selected.len() >= super::batch::LIMIT {
                 return Err(format!(
@@ -180,7 +231,7 @@ pub(super) fn render(
     let mut top = inner.y + if manager.quick_add { 7 } else { 5 };
     let bottom = inner
         .bottom()
-        .saturating_sub(if manager.quick_add { 4 } else { 3 });
+        .saturating_sub(if manager.quick_add { 5 } else { 3 });
     if let Some(error) = &browser.error {
         if browser.devices.is_empty() {
             Paragraph::new(error.as_str())
@@ -245,7 +296,9 @@ pub(super) fn render(
         let rows = (height(device) as u16).min(bottom - y);
         let rect = Rect::new(inner.x, y, inner.width, rows);
         buffer.set_style(rect, style);
-        let status = "online";
+        let added =
+            manager.quick_add && device_key(device).is_some_and(|key| browser.added.contains(&key));
+        let status = if added { "added" } else { "online" };
         let status_width = status.len() as u16;
         let prefix = if manager.quick_add { 4 } else { 0 };
         if manager.quick_add {
@@ -255,7 +308,13 @@ pub(super) fn render(
                 inner.x,
                 y,
                 3,
-                if checked { "[x]" } else { "[ ]" },
+                if added {
+                    "[-]"
+                } else if checked {
+                    "[x]"
+                } else {
+                    "[ ]"
+                },
                 style,
             );
         }
@@ -313,6 +372,31 @@ pub(super) fn render(
         y = y.saturating_add(rows + 1);
     }
     if manager.quick_add {
+        let all = Rect::new(inner.x, inner.bottom() - 4, inner.width.min(24), 1);
+        put_text(
+            buffer,
+            all.x,
+            all.y,
+            all.width,
+            "[ Select all online ]",
+            normal.fg(palette.accent),
+        );
+        hits.push((all, Hit::SelectAllOnline(browser.revision)));
+        if inner.width >= 52 {
+            let cloud = Rect::new(inner.x + 25, inner.bottom() - 4, inner.width - 25, 1);
+            put_text(
+                buffer,
+                cloud.x,
+                cloud.y,
+                cloud.width,
+                "[ Cloud instances… ]",
+                normal.fg(palette.accent),
+            );
+            hits.push((cloud, Hit::Cloud));
+        }
+        if let Some(note) = manager.error.as_deref().or(browser.notice.as_deref()) {
+            put_text(buffer, inner.x, inner.y + 6, inner.width, note, muted);
+        }
         let action = Rect::new(inner.x, inner.bottom() - 3, inner.width.min(23), 1);
         put_text(
             buffer,
@@ -354,14 +438,14 @@ pub(super) fn render(
         if manager.quick_add {
             if browser.loading {
                 "[ Loading ]"
-            } else if manager.selected == matches.len() {
+            } else if menu_actions(manager).get(manager.selected) == Some(&Hit::RefreshTailscale) {
                 "> Refresh"
             } else {
                 "[ Refresh ]"
             }
         } else if browser.loading {
             "[ Refreshing… ]"
-        } else if manager.selected == matches.len() {
+        } else if menu_actions(manager).get(manager.selected) == Some(&Hit::RefreshTailscale) {
             "> Refresh (Ctrl+R)"
         } else {
             "[ Refresh (Ctrl+R) ]"
@@ -417,34 +501,34 @@ pub(super) fn suggested_username(profiles: &[SavedSshEndpoint]) -> String {
         String::new()
     }
 }
+pub(super) fn host_identity(
+    device: &TailscaleDevice,
+) -> crate::remote::host_identity::HostIdentity {
+    crate::remote::host_identity::HostIdentity {
+        dns: device.dns.clone(),
+        ips: device.ips.clone(),
+    }
+}
+pub(super) fn already_added(profiles: &[SavedSshEndpoint], device: &TailscaleDevice) -> bool {
+    let identity = host_identity(device);
+    profiles.iter().any(|p| identity.matches_target(&p.target))
+}
 pub(super) fn existing_profiles<'a>(
     profiles: &'a [SavedSshEndpoint],
     device: &TailscaleDevice,
     username: &str,
 ) -> Vec<&'a SavedSshEndpoint> {
+    let identity = host_identity(device);
     profiles
         .iter()
         .filter(|p| {
-            let authority = p.target.strip_prefix("ssh://").unwrap_or(&p.target);
-            let (user, host) = authority
+            p.target
+                .strip_prefix("ssh://")
+                .unwrap_or(&p.target)
                 .rsplit_once('@')
-                .map_or(("", authority), |(user, host)| (user, host));
-            if user != username {
-                return false;
-            }
-            let host = if let Some(rest) = host.strip_prefix('[') {
-                rest.split_once(']').map_or(rest, |(host, _)| host)
-            } else if host.matches(':').count() == 1 {
-                host.split_once(':').map_or(host, |(host, _)| host)
-            } else {
-                host
-            };
-            device.dns.as_ref().is_some_and(|dns| {
-                dns.trim_end_matches('.')
-                    .eq_ignore_ascii_case(host.trim_end_matches('.'))
-            }) || host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| device.ips.contains(&ip))
+                .map_or("", |(user, _)| user)
+                == username
+                && identity.matches_target(&p.target)
         })
         .collect()
 }

@@ -1,6 +1,14 @@
 //! Optional, private progress channel for the embedded setup UI. Never carries
 //! authentication input, command output, identities, or other secret material.
 use std::io::Write;
+pub(crate) const SKIPPED_EXISTING: &str = "SkippedExisting";
+pub(crate) fn skipped_existing() {
+    if let Some(path) = std::env::var_os(ENV) {
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = writeln!(file, "{SKIPPED_EXISTING}");
+        }
+    }
+}
 pub(crate) const ENV: &str = "HERDR_SETUP_PROGRESS_FILE";
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Phase {

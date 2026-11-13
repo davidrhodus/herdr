@@ -616,8 +616,12 @@ to or install anything until you select one.
 
 To add several devices, click their checkboxes or move with ↑/↓ and press
 Space, then choose **Add selected** (or press Enter on a device row). Search and
-Refresh preserve selections by Tailscale device ID. Up to 32 devices can be
-queued; a selected device that disappears or is replaced is skipped.
+Refresh preserve selections by Tailscale device ID. **Select all online** selects
+new devices matching the current search, up to 32 per batch. Saved servers show
+**added** and are skipped, including entries saved under another username or IP
+alias and disabled entries. Herdr checks again just before SSH setup, so a server
+that arrives through sync while queued is skipped too. A selected device that
+disappears or is replaced is skipped. Select All itself never starts setup.
 
 Herdr sets up one server at a time, showing the current server and progress.
 The Username field is captured for the batch; each server uses its own SSH
@@ -628,5 +632,62 @@ The results screen lists every outcome. Choose a failed server to inspect its
 retained setup output, or **Retry failed / stopped servers** to retry only those
 entries. Up to eight bounded failure screens are kept in memory for this dialog.
 Cancel stops the current setup and remaining queue; completed servers stay
-saved and running. Closing the dialog discards the queue. Changed or ambiguous
-saved profiles require review instead of silently connecting elsewhere.
+saved and running. Closing the dialog discards the queue. Choose a saved server
+explicitly from Servers to reconnect or change it.
+
+
+## Create cloud servers
+
+Open **Servers → Cloud instances**, or **Cloud instances** in the online-device
+browser. The panel runs inside Herdr's existing setup terminal. Choose a numbered
+option and press Return; Ctrl+G closes it. No separate shell is needed for normal
+account setup or instance actions.
+
+Configure AWS accounts/profiles and regions, or Google accounts/configurations,
+projects and zones in this panel. The official AWS CLI v2 or Google Cloud CLI
+must be installed on the manager computer; account configuration can launch
+provider sign-in inside the panel. Accounts and provisioning jobs are local to
+that computer. Provider credentials and SSH private keys are never synced.
+
+Configure Tailscale once with an OAuth client authorized for `auth_keys` write
+and the chosen server tag. Enter its secret in the hidden input in Herdr. It is
+stored in a private local file; the VM receives a single-use, 24-hour enrollment
+key. Tailnet policy must permit the manager to reach tagged servers on SSH.
+The provider retains user data/startup metadata, including this short-lived key;
+Herdr never places the long-lived OAuth secret there.
+
+Choose **Create AWS EC2**, **Create AWS Nitro Sandbox**, or **Create Google Cloud**.
+Review the account, location, image, size and network, then type `CREATE`.
+Resources incur provider charges. The selected subnet must have outbound internet;
+this initial implementation assigns an external address for egress and blocks
+public SSH. AWS requires an existing security group with no inbound rules.
+GCP creates an owned IPv4 SSH deny rule; organization policies that disallow
+metadata SSH keys or external addresses can prevent setup.
+
+Herdr installs Tailscale, verifies its node against the authenticated provider's
+serial console, pins its Ed25519 SSH host key, and installs the current bundled
+Rust server. It saves the server only after the health check passes, then normal
+server-list sync shares the entry with other managers. SSH access remains local:
+other managers need their own authorized SSH key and host trust.
+
+**Manage / resume existing jobs** retains the provider identity and exact create
+request across failures. Resume reconciles an existing resource before retrying
+an uncertain create; retries use the original idempotency token within a bounded
+window. It refuses to replay an unknown create after that window expires.
+**repair-enrollment** refreshes an expired first-boot key for a job that has never
+become Ready. It stops/restarts an EC2 parent and can repair a Nitro guest's
+bootstrap disk. **Start**, **Stop**, and **Delete** require explicit review.
+Stop ends running programs and retains billable disks; Delete removes the owned
+instance/boot disk and GCP firewall rule. Shared networking is left intact.
+Closing the setup panel retains created resources for Manage; it does not delete
+them or finish a cancelled local installation.
+
+Nitro provisioning creates a dedicated compatible AL2023 kernel 6.18 EC2 parent
+and one Firecracker 1.18 guest. The guest uses persistent root storage, an owned
+TAP/NAT network with parent IMDS blocked, and its own Tailscale/SSH identity.
+The parent reserves memory and reboots during initial preparation. This is a
+**direct-mode sandbox with console diagnostics**, without confidential attestation
+or secret-release guarantees. An overlapping guest subnet is rejected before
+network changes. Stop/start reconstructs the guest network and preserves its disk.
+Live provider provisioning requires account credentials and has to be validated
+in the chosen account before relying on it for production workloads.
