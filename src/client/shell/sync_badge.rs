@@ -8,13 +8,13 @@ fn footer_rows(area: Rect) -> u16 {
     } else if area.height < 12 {
         2
     } else if area.width >= 21 && area.height >= 24 {
-        9
+        7
     } else {
         3
     }
 }
 pub(super) fn cards_visible(area: Rect) -> bool {
-    footer_rows(area) == 9
+    footer_rows(area) == 7
 }
 pub(super) fn content_area(area: Rect) -> Rect {
     Rect::new(
@@ -107,54 +107,68 @@ pub(super) fn paint(
         hits.sync_status.height = 2;
     }
     if cards_visible(area) {
-        let start = area.bottom() - 9;
+        let start = area.bottom() - 7;
         for index in 0..2 {
-            let y = start + index * 3;
+            let y = start + index * 2;
             let manager = view.managers.get(usize::from(index));
             let color = match manager.map(|m| m.level) {
                 Some(Level::Good) => palette.green,
                 Some(Level::Warning) => palette.red,
                 _ => palette.yellow,
             };
+            let name = manager
+                .map(|m| m.name.as_str())
+                .unwrap_or("Manager · waiting…");
+            let full = manager
+                .map(|m| m.status.as_str())
+                .unwrap_or("? Version unknown · auto ?");
+            let compact = manager
+                .map(|m| m.compact.as_str())
+                .unwrap_or("unknown auto ?");
+            let seen = manager.map(|m| m.last_seen.as_str()).unwrap_or("?");
+            let age_width = seen.len().min(usize::from(row.width)) as u16;
+            let status_width = row.width.saturating_sub(age_width + 1);
+            let inline = compact.len() <= usize::from(status_width);
+            let name_width = if inline { row.width } else { status_width };
             render::put_text(
                 buffer,
                 row.x,
                 y,
-                row.width,
-                manager
-                    .map(|m| m.name.as_str())
-                    .unwrap_or("Manager · waiting…"),
+                name_width,
+                name,
                 Style::default().fg(palette.text).bg(palette.sidebar_bg),
             );
+            let status_width = if inline { status_width } else { row.width };
+            let status = if full.len() <= usize::from(status_width) {
+                full
+            } else {
+                compact
+            };
             render::put_text(
                 buffer,
                 row.x,
                 y + 1,
-                row.width,
-                manager
-                    .map(|m| {
-                        if m.status.len() <= usize::from(row.width) {
-                            m.status.as_str()
-                        } else {
-                            m.compact.as_str()
-                        }
-                    })
-                    .unwrap_or("? Version unknown · auto ?"),
+                status_width,
+                status,
                 Style::default().fg(color).bg(palette.sidebar_bg),
             );
             render::put_text(
                 buffer,
-                row.x,
-                y + 2,
-                row.width,
-                manager
-                    .map(|m| m.last_seen.as_str())
-                    .unwrap_or("Check-in unknown"),
-                Style::default().fg(color).bg(palette.sidebar_bg),
+                row.x + row.width - age_width,
+                if inline { y + 1 } else { y },
+                age_width,
+                seen,
+                Style::default()
+                    .fg(if manager.is_some_and(|m| m.level == Level::Good) {
+                        palette.overlay0
+                    } else {
+                        color
+                    })
+                    .bg(palette.sidebar_bg),
             );
         }
         hits.sync_status.y = start;
-        hits.sync_status.height = 8;
+        hits.sync_status.height = 6;
     }
 }
 
@@ -228,7 +242,7 @@ mod tests {
                     name: name.into(),
                     status: "✓ v0.9.5 b3 · auto on".into(),
                     compact: "b3 auto on".into(),
-                    last_seen: "Seen 35s ago".into(),
+                    last_seen: "35s".into(),
                     level: crate::client::sync_status::Level::Good,
                 })
                 .collect(),
@@ -240,14 +254,14 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>()
         };
-        assert!(line(21).starts_with("David’s Mac Studio"));
-        assert!(line(22).starts_with("✓ v0.9.5 b3 · auto on"));
-        assert!(line(23).starts_with("Seen 35s ago"));
-        assert!(line(24).starts_with("David’s MacBook Pro"));
-        assert!(line(25).starts_with("✓ v0.9.5 b3 · auto on"));
-        assert!(line(26).starts_with("Seen 35s ago"));
-        assert_eq!(content_area(area).bottom(), 21);
-        assert_eq!(hits.sync_status.y, 21);
+        assert!(line(23).starts_with("David’s Mac Studio"));
+        assert!(line(24).starts_with("b3 auto on"));
+        assert!(line(24).trim_end().ends_with("35s"));
+        assert!(line(25).starts_with("David’s MacBook Pro"));
+        assert!(line(26).starts_with("b3 auto on"));
+        assert!(line(26).trim_end().ends_with("35s"));
+        assert_eq!(content_area(area).bottom(), 23);
+        assert_eq!(hits.sync_status.y, 23);
         assert_eq!(hits.sync_status.bottom(), 29);
         assert!(line(29).starts_with(version_text(25)));
     }
@@ -263,14 +277,18 @@ mod tests {
                 name: "Laptop".into(),
                 status: format!("? v0.9.5 b4294967295 · auto {auto}"),
                 compact: compact.clone(),
-                last_seen: "Seen 3m · stale".into(),
+                last_seen: "3m stale".into(),
                 level: crate::client::sync_status::Level::Waiting,
             });
             paint(&mut buffer, area, &view, &Palette::catppuccin(), &mut hits);
             let drawn: String = (0..area.width - 1)
-                .map(|x| buffer[(x, 22)].symbol())
+                .map(|x| buffer[(x, 24)].symbol())
                 .collect();
             assert!(drawn.starts_with(&compact), "{drawn}");
+            let name: String = (0..area.width - 1)
+                .map(|x| buffer[(x, 23)].symbol())
+                .collect();
+            assert!(name.trim_end().ends_with("3m stale"));
         }
         assert_eq!(footer_rows(Rect::new(0, 0, 20, 30)), 3);
     }

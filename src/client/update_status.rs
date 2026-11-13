@@ -19,7 +19,7 @@ fn clean(value: &Value, limit: usize) -> Option<String> {
 }
 fn last_seen(age: Option<u64>, host_fresh: bool) -> String {
     let Some(age) = age else {
-        return "Check-in unknown".into();
+        return "?".into();
     };
     let short = match age {
         0..60 => format!("{}s", age / 5 * 5),
@@ -29,11 +29,11 @@ fn last_seen(age: Option<u64>, host_fresh: bool) -> String {
         _ => "9999d+".into(),
     };
     if !host_fresh {
-        format!("Host stale · {short}")
+        "host stale".into()
     } else if age > 150 {
-        format!("Seen {short} · stale")
+        format!("{short} stale")
     } else {
-        format!("Seen {short} ago")
+        short
     }
 }
 pub(super) fn present(
@@ -56,7 +56,7 @@ pub(super) fn present(
                 name: names.get(ip).cloned().unwrap_or_else(|| ip.to_string()),
                 status: "? Version unknown · auto ?".into(),
                 compact: "unknown auto ?".into(),
-                last_seen: "Check-in unknown".into(),
+                last_seen: "?".into(),
                 level: Level::Waiting,
             })
             .collect(),
@@ -123,7 +123,7 @@ pub(super) fn present(
                 name,
                 status: "? Version unknown · auto ?".into(),
                 compact: "unknown auto ?".into(),
-                last_seen: "No check-in yet".into(),
+                last_seen: "?".into(),
                 level: Level::Waiting,
             });
             lines.push("  Version unknown · no update report yet".into());
@@ -331,19 +331,19 @@ mod tests {
     #[test]
     fn sidebar_checkins_age_locally_and_distinguish_stale_host_from_stale_manager() {
         let v = view(observation(), 1010);
-        assert_eq!(v.managers[0].last_seen, "Seen 15s ago");
+        assert_eq!(v.managers[0].last_seen, "15s");
         let mut old = observation();
         old["peers"]["managers"][1]["age_seconds"] = 180.into();
         let v = view(old, 1005);
-        assert_eq!(v.managers[1].last_seen, "Seen 3m · stale");
+        assert_eq!(v.managers[1].last_seen, "3m stale");
         assert_ne!(v.managers[1].level, Level::Good);
         let v = view(observation(), 1091);
-        assert_eq!(v.managers[0].last_seen, "Host stale · 1m");
+        assert_eq!(v.managers[0].last_seen, "host stale");
         let v = view(observation(), 999);
-        assert_eq!(v.managers[0].last_seen, "Check-in unknown");
+        assert_eq!(v.managers[0].last_seen, "?");
         let mut missing = observation();
         missing["peers"]["managers"].as_array_mut().unwrap().pop();
-        assert_eq!(view(missing, 1005).managers[1].last_seen, "No check-in yet");
+        assert_eq!(view(missing, 1005).managers[1].last_seen, "?");
         assert!(last_seen(Some(u64::MAX), true).len() <= 20);
     }
     #[test]
