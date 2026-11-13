@@ -1279,7 +1279,7 @@ fn sync_badge_is_clickable_without_covering_sidebar_controls_or_resizing_panes()
         let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: badge.x,
-            row: badge.y,
+            row: badge.bottom() - 1,
             modifiers: KeyModifiers::empty(),
         })]);
         assert!(outcome.repaint);
@@ -1295,6 +1295,9 @@ fn sync_details_update_without_repainting_closed_modal_and_preserve_selected_act
     state.receive_sync_status(view.clone());
     view.details = "Updated age".into();
     assert!(!state.receive_sync_status(view.clone()));
+    view.updates = "Updates: 2 current · auto".into();
+    view.update_level = crate::client::sync_status::Level::Good;
+    assert!(state.receive_sync_status(view.clone()));
     state.open_sync_status(&mut ClientShellInput::default());
     if let Some(ClientShellOverlay::Machines(m)) = state.overlay.as_mut() {
         m.selected = super::super::machine_manager::menu_actions(m)

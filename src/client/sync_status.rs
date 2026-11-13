@@ -18,6 +18,8 @@ pub(crate) struct View {
     pub compact: String,
     pub level: Level,
     pub details: String,
+    pub updates: String,
+    pub update_level: Level,
 }
 impl Default for View {
     fn default() -> Self {
@@ -26,6 +28,8 @@ impl Default for View {
             compact: "⇄".into(),
             level: Level::Waiting,
             details: "Checking manager sync status…".into(),
+            updates: "Updates: checking…".into(),
+            update_level: Level::Waiting,
         }
     }
 }
@@ -36,10 +40,36 @@ fn now() -> u64 {
         .as_secs()
 }
 pub(crate) fn view() -> View {
-    let mut view = match super::endpoint::catalog_sync::monitor::snapshot() {
+    let names = names(&super::sync_background::root());
+    let snapshot = super::endpoint::catalog_sync::monitor::snapshot();
+    let mut peers = BTreeMap::new();
+    for manager in snapshot
+        .as_ref()
+        .ok()
+        .and_then(|s| s.report.as_ref())
+        .into_iter()
+        .flat_map(|r| &r.managers)
+        .filter(|m| m.authentication == "restricted_key")
+    {
+        if let Some(fp) = manager.key_fingerprint.as_ref() {
+            let latest = peers.entry(fp).or_insert(manager);
+            if manager.last_exchange > latest.last_exchange {
+                *latest = manager;
+            }
+        }
+    }
+    let expected = peers.values().map(|m| m.address).collect();
+    let updates = super::update_status::present(
+        crate::private_updates::manager_status().map_err(|e| e.to_string()),
+        &names,
+        &addresses(&super::sync_background::root()),
+        expected,
+        now(),
+    );
+    let mut view = match snapshot {
         Ok(snapshot) => present(
             snapshot,
-            names(&super::sync_background::root()),
+            names,
             now(),
             super::sync_background::status()["running"] == true,
         ),
@@ -48,18 +78,23 @@ pub(crate) fn view() -> View {
             compact: "!".into(),
             level: Level::Warning,
             details: format!("Sync status unavailable: {error}"),
+            ..View::default()
         },
     };
-    view.details.insert_str(
-        0,
-        &format!("Herdr {}\n", crate::build_info::DISPLAY_VERSION),
+    view.details = format!(
+        "Herdr {}\n\n{}\n\n{}\n{}",
+        crate::build_info::DISPLAY_VERSION,
+        updates.details,
+        view.details,
+        crate::private_updates::status_line()
     );
-    view.details
-        .push_str(&format!("\n{}", crate::private_updates::status_line()));
+    view.updates = updates.badge;
+    view.update_level = updates.level;
     view
 }
 pub(crate) fn remember_network(root: &Path, network: &super::machine_setup::tailscale::Network) {
     let mut names = BTreeMap::new();
+    let mut addresses = BTreeMap::new();
     for node in std::iter::once(&network.own)
         .chain(network.peers.iter())
         .take(257)
@@ -72,20 +107,49 @@ pub(crate) fn remember_network(root: &Path, network: &super::machine_setup::tail
             .collect();
         for ip in node.ips.iter().take(8) {
             names.insert(*ip, name.clone());
+            if let Some(canonical) = node.ips.iter().min() {
+                addresses.insert(*ip, *canonical);
+            }
         }
     }
-    let Ok(bytes) = serde_json::to_vec(&names) else {
-        return;
-    };
-    if bytes.len() > 512 * 1024 {
-        return;
+    for (file, bytes) in [
+        ("manager-device-names.json", serde_json::to_vec(&names)),
+        (
+            "manager-device-addresses.json",
+            serde_json::to_vec(&addresses),
+        ),
+    ] {
+        let Ok(bytes) = bytes else {
+            continue;
+        };
+        if bytes.len() > 512 * 1024 {
+            continue;
+        }
+        let path = root.join(file);
+        if std::fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+            let _ =
+                super::endpoint::store_private_json(&path, &bytes, "manager device information");
+        }
     }
-    let path = root.join("manager-device-names.json");
-    if std::fs::read(&path).ok().as_deref() == Some(bytes.as_slice()) {
-        return;
-    }
-    let _ = super::endpoint::store_private_json(&path, &bytes, "manager device names");
 }
+fn addresses(root: &Path) -> BTreeMap<IpAddr, IpAddr> {
+    let Ok(file) = std::fs::File::open(root.join("manager-device-addresses.json")) else {
+        return BTreeMap::new();
+    };
+    let mut bytes = Vec::new();
+    if file.take(128 * 1024 + 1).read_to_end(&mut bytes).is_err() || bytes.len() > 128 * 1024 {
+        return BTreeMap::new();
+    }
+    let parsed: BTreeMap<IpAddr, IpAddr> = serde_json::from_slice(&bytes).unwrap_or_default();
+    parsed
+        .into_iter()
+        .take(2056)
+        .filter(|(ip, canonical)| {
+            super::tailscale::tailscale_ip(*ip) && super::tailscale::tailscale_ip(*canonical)
+        })
+        .collect()
+}
+
 fn names(root: &Path) -> BTreeMap<IpAddr, String> {
     let Ok(file) = std::fs::File::open(root.join("manager-device-names.json")) else {
         return BTreeMap::new();
@@ -150,10 +214,11 @@ fn present(
                 "Server-list sync is off."
             }
             .into(),
+            ..View::default()
         };
     };
     if *source == Source::Direct {
-        return View {badge:"Sync: Direct".into(),compact:"⇄".into(),level:Level::Waiting,details:"Direct Tailscale pairing is selected. Choose “Pair another manager over Tailscale” for pairing status. Restricted SSH keys apply to shared-host sync.".into()};
+        return View {badge:"Sync: Direct".into(),compact:"⇄".into(),level:Level::Waiting,details:"Direct Tailscale pairing is selected. Choose “Pair another manager over Tailscale” for pairing status. Restricted SSH keys apply to shared-host sync.".into(), ..View::default()};
     }
     let mut lines = vec![match source {
         Source::Ssh { target } => format!("Shared list via {target}"),
@@ -189,6 +254,7 @@ fn present(
                 Level::Waiting
             },
             details: lines.join("\n"),
+            ..View::default()
         };
     };
     let elapsed = now.checked_sub(snapshot.fetched_at);
@@ -304,6 +370,7 @@ fn present(
         compact: if good { "✓" } else { "⇄!" }.into(),
         level: if good { Level::Good } else { Level::Warning },
         details: lines.join("\n"),
+        ..View::default()
     }
 }
 

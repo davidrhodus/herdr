@@ -45,6 +45,7 @@ mod terminal_sessions;
 mod terminal_setup;
 mod timer;
 mod transport;
+mod update_status;
 
 #[cfg(test)]
 use clipboard_forwarding::decode_clipboard_payload;

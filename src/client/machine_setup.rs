@@ -357,9 +357,13 @@ fn run(commands: mpsc::Receiver<Command>, events: mpsc::SyncSender<Event>) {
                 let events = events.clone();
                 std::thread::spawn(move || {
                     let result = super::endpoint::catalog_sync::monitor::refresh();
+                    let updates = crate::private_updates::refresh_manager_status();
                     let mut text = sync_status();
                     if let Err(error) = result {
                         text.push_str(&format!("\nStatus refresh failed: {error}"));
+                    }
+                    if let Err(error) = updates {
+                        text.push_str(&format!("\nUpdate status refresh failed: {error}"));
                     }
                     let _ = events.send(Event::Status { id, text });
                 });

@@ -72,6 +72,25 @@ pub(super) fn get(address: SocketAddr, path: &str, limit: u64) -> io::Result<Vec
     body(stream, length, &mut bytes)?;
     Ok(bytes)
 }
+pub(super) fn get_diagnostics(address: SocketAddr, path: &str, limit: u64) -> io::Result<Vec<u8>> {
+    let (mut stream, length) = request(address, path, limit)?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut bytes = vec![0; length as usize];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| fail("Manager status deadline exceeded"))?;
+        stream.set_read_timeout(Some(left))?;
+        let n = stream.read(&mut bytes[offset..])?;
+        if n == 0 {
+            return Err(fail("Truncated manager status"));
+        }
+        offset += n;
+    }
+    Ok(bytes)
+}
 pub(super) fn download(
     address: SocketAddr,
     path: &str,

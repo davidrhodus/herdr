@@ -572,3 +572,16 @@ queue history cleanup. Build numbers are included in both Linux payloads and
 the Mac manager. Unnumbered source builds display `dev` or a short build hash.
 In a collapsed sidebar the label shortens to `b42` when it fits; expand it or
 open sync details to see the full version.
+
+The sidebar also shows **Updates: 2 current · auto** when both managers have
+recently confirmed the latest signed release and automatic updates. Click the
+sync or update indicator to open **Manager sync & updates**. Each computer's
+name/IP, reported version, automatic update setting, and last report age appear
+at the top. Missing or stale reports, disabled updates, errors, and pending
+updates remain visibly unconfirmed. These are background updater diagnostics;
+a UI with an open dialog can defer its restart until the dialog closes.
+
+Status refreshes automatically through the existing background updater, even
+with multiple UIs open. **Refresh manager status (Ctrl+R)** also refreshes the
+host observation. Older update hosts must be upgraded to serve manager status;
+older managers remain compatible and show an unknown version until upgraded.

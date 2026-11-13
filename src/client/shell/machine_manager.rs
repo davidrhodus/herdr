@@ -186,7 +186,9 @@ impl ClientShellState {
     pub(crate) fn receive_sync_status(&mut self, view: crate::client::sync_status::View) -> bool {
         let mut repaint = self.sync_view.badge != view.badge
             || self.sync_view.compact != view.compact
-            || self.sync_view.level != view.level;
+            || self.sync_view.level != view.level
+            || self.sync_view.updates != view.updates
+            || self.sync_view.update_level != view.update_level;
         if let Some(ClientShellOverlay::Machines(manager)) = self.overlay.as_mut() {
             if matches!(manager.page, Page::Sync) && manager.sync != view.details {
                 let selected = menu_actions(manager).get(manager.selected).copied();
@@ -1043,7 +1045,7 @@ pub(super) fn render(
         Page::Manage(p) => &p.label,
         Page::Imports(_) => "Import running terminal sessions",
         Page::Rename(_) => "Rename server",
-        Page::Sync => "Server-list sync",
+        Page::Sync => "Manager sync & updates",
         Page::Join => "Join a shared server list",
         Page::Confirm { .. } => "Confirm",
         Page::Approval(prompt) => &prompt.title,

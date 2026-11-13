@@ -1430,7 +1430,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     );
 
     state.workspace_scroll = usize::MAX;
-    state.compose(100, 19).expect("scrolled endpoint frame");
+    state.compose(100, 20).expect("scrolled endpoint frame");
     let metrics = state
         .hits
         .workspace_scroll_metrics

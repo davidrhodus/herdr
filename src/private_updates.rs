@@ -402,6 +402,7 @@ fn run_check(automatic: bool) -> io::Result<()> {
         &serde_json::json!({"checked_at":now(),"pid":std::process::id(),"automatic":automatic,"error":result.as_ref().err().map(ToString::to_string)}),
     )?;
     let _ = report::send(&root, &policy);
+    report::refresh(&root, &policy);
     result.map(|_| ())
 }
 fn automatic_due(value: &serde_json::Value, at: u64) -> bool {
@@ -542,6 +543,20 @@ fn await_service(expected: &str, since: u64) -> io::Result<()> {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+pub(crate) fn refresh_manager_status() -> io::Result<()> {
+    let root = root();
+    let lease = crate::client::direct_sync::worker_lease(&root, "run.lock")?;
+    if lease.try_lock().is_err() {
+        return Ok(());
+    }
+    if let Some(policy) = policy_at(&root)?.filter(|p| p.enabled) {
+        report::refresh(&root, &policy);
+    }
+    Ok(())
+}
+pub(crate) fn manager_status() -> io::Result<serde_json::Value> {
+    report::cached()
 }
 pub(crate) fn status_line() -> String {
     let root = root();

@@ -33,8 +33,27 @@ fn connection(root: &Path, mut stream: TcpStream) -> io::Result<()> {
     let header = std::str::from_utf8(&header).map_err(io::Error::other)?;
     let first = header.split("\r\n").next().unwrap_or("");
     let parts: Vec<_> = first.split(' ').collect();
-    if parts.as_slice() == ["POST", "/v1/report", "HTTP/1.1"] {
-        return report::receive(root, stream.peer_addr()?, header, &mut stream);
+    if parts.as_slice() == ["POST", "/v1/report", "HTTP/1.1"]
+        || parts.as_slice() == ["POST", "/v2/report", "HTTP/1.1"]
+    {
+        return report::receive(
+            root,
+            stream.peer_addr()?,
+            header,
+            &mut stream,
+            parts[1] == "/v2/report",
+        );
+    }
+    if parts.as_slice() == ["GET", "/v1/peers", "HTTP/1.1"] {
+        if !crate::client::tailscale::tailscale_ip(stream.peer_addr()?.ip()) {
+            return Err(fail("Manager status requires Tailscale"));
+        }
+        let bytes = serde_json::to_vec(&report::peers_at(root)?).map_err(io::Error::other)?;
+        if bytes.len() > 128 * 1024 {
+            return Err(fail("Manager status exceeds size limit"));
+        }
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n", bytes.len())?;
+        return stream.write_all(&bytes);
     }
     let file = if parts.len() == 3 && parts[0] == "GET" && parts[2] == "HTTP/1.1" {
         path(root, parts[1])
