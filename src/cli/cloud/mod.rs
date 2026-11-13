@@ -1,5 +1,6 @@
 //! Interactive client-local cloud control, hosted inside the machine manager PTY.
 //! Provisioning authority is deliberately separate from catalog-sync authority.
+mod aws_network;
 mod bootstrap;
 mod model;
 mod nitro;
@@ -94,7 +95,7 @@ pub(super) fn run(args: &[String]) -> io::Result<i32> {
     lock.try_lock()
         .map_err(|_| error("Cloud setup is open in another local Herdr window"))?;
     loop {
-        println!("\nCloud instances\n  1  Create AWS EC2 instance\n  2  Create AWS Nitro Sandbox\n  3  Create Google Cloud instance\n  4  Manage / resume existing jobs\n  5  Configure AWS account and region\n  6  Configure Google account, project and zone\n  7  Configure Tailscale enrollment\n  0  Back\nEnter a number, then Return. Ctrl+G closes this panel; created resources remain in Manage.");
+        println!("\nCloud instances\n  1  Create AWS EC2 instance\n  2  Create AWS Nitro Sandbox\n  3  Create Google Cloud instance\n  4  Manage / resume existing jobs\n  5  Configure AWS account and region\n  6  Configure Google account, project and zone\n  7  Configure Tailscale enrollment\n  8  Choose / create AWS networking\n  9  Resume network creation\n  0  Back\nEnter a number, then Return. Ctrl+G closes this panel; created resources remain in Manage.");
         let result = match input("Choose", "")?.as_str() {
             "0" => return Ok(0),
             "1" => create(Provider::Aws, false),
@@ -104,6 +105,8 @@ pub(super) fn run(args: &[String]) -> io::Result<i32> {
             "5" => configure(Provider::Aws),
             "6" => configure(Provider::Gcp),
             "7" => tailscale(),
+            "8" => aws_network::configure(),
+            "9" => aws_network::resume(),
             _ => continue,
         };
         if let Err(e) = result {
@@ -179,8 +182,7 @@ fn configure(provider: Provider) -> io::Result<()> {
                 "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.18-x86_64",
             )?;
             a.size = input("Instance type", "t3.small")?;
-            a.subnet = input("Subnet ID with outbound internet", "")?;
-            a.security_group = input("Security group ID (no inbound rules)", "")?;
+            aws_network::select(&mut a)?;
         }
         Provider::Gcp => {
             a.principal = input("Google account email", "")?;
@@ -283,6 +285,11 @@ fn create(provider: Provider, nitro: bool) -> io::Result<()> {
         return Err(error("Nitro Sandboxes require an AL2023 kernel 6.18 AMI. Configure the matching AWS image first."));
     }
     verify_account(&account)?;
+    if provider == Provider::Aws
+        && input("Use saved networking? (yes / choose)", "yes")? == "choose"
+    {
+        aws_network::select(&mut account)?;
+    }
     println!("\nCreate review\n  Account: {}\n  Location: {}\n  Size: {}\n  Image: {}\n  Network: {}\n  Outbound internet: external address\n  Public SSH: blocked\n  SSH user: herdr · dedicated local key\n  Tailscale: single-use enrollment → verified SSH → current Rust build",safe(&account.principal),safe(&account.location),safe(&account.size),safe(&account.image),safe(&account.subnet));
     if nitro {
         println!("  Nitro: one dedicated EC2 parent and one direct-mode guest; persistent 16 GiB guest root disk. Parent preparation reboots this new dedicated parent only.");

@@ -24,6 +24,7 @@ pub(super) fn create_request(
     }
     match account.provider {
         Provider::Aws => {
+            super::aws_network::validate(account)?;
             // Resolve the exact AMI once. A moving SSM alias must not change a retried request.
             let image = if account.image.starts_with("/aws/") {
                 field(
@@ -182,6 +183,7 @@ pub(super) fn create(job: &mut Job) -> io::Result<()> {
         job.phase("Creating instance")?;
         match job.account.provider {
             Provider::Aws => {
+                super::aws_network::validate(&job.account)?;
                 let path = job_dir(&job.id)?.join("request.json");
                 save(&path, &job.request)?;
                 let arg = format!("file://{}", path.display());

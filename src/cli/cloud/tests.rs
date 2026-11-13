@@ -3,9 +3,9 @@ use super::*;
 use serde_json::{json, Value};
 use std::{cell::RefCell, rc::Rc};
 
-struct Context(std::path::PathBuf);
+pub(super) struct Context(std::path::PathBuf);
 impl Context {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = crate::platform::create_remote_ssh_config_dir("cloud-contract-test").unwrap();
         model::TEST_ROOT.with(|r| *r.borrow_mut() = Some(path.clone()));
         Self(path)
@@ -18,7 +18,7 @@ impl Drop for Context {
         std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
-fn job() -> Job {
+pub(super) fn job() -> Job {
     serde_json::from_value(json!({"id":"12345678-1234-4234-8234-123456789abc","account":{"name":"test","provider":"Aws","configuration":"test","principal":"123","location":"us-west-2","project":"","image":"ami-test","size":"t3.small","subnet":"subnet-test","security_group":"sg-test"},"name":"server","nitro":false,"request":{"ClientToken":"12345678-1234-4234-8234-123456789abc","UserData":"dummy"},"resource":null,"operation":null,"submitted":false,"phase":"Reviewed","target":null,"endpoint":null,"deleted":false})).unwrap()
 }
 fn bytes(v: Value) -> Vec<u8> {
@@ -37,6 +37,7 @@ fn lost_create_reply_is_reconciled_without_a_second_create() {
     let id = job().id;
     transport::FAKE.with(|f|*f.borrow_mut()=Some(Box::new(move |c,_| {
         let a=args(c);
+        if let Some(data)=super::aws_network::tests::fixture(c) {return Ok(data);}
         if a.iter().any(|a|a=="get-caller-identity") {return Ok(bytes(json!({"Account":"123"})));}
         if a.iter().any(|a|a=="run-instances") {*calls.borrow_mut()+=1;return Err(error("lost reply"));}
         assert!(a.iter().any(|a|a=="describe-instances"));
@@ -59,6 +60,7 @@ fn crash_before_send_retries_the_identical_frozen_request() {
     let id = job().id;
     transport::FAKE.with(|f|*f.borrow_mut()=Some(Box::new(move |c,_| {
         let a=args(c);
+        if let Some(data)=super::aws_network::tests::fixture(c) {return Ok(data);}
         if a.iter().any(|a|a=="get-caller-identity") {return Ok(bytes(json!({"Account":"123"})));}
         if a.iter().any(|a|a=="run-instances") {
             let path=a.last().unwrap().strip_prefix("file://").unwrap();
@@ -91,6 +93,7 @@ fn deleting_a_foreign_resource_never_sends_a_mutation() {
     let _context = Context::new();
     transport::FAKE.with(|f|*f.borrow_mut()=Some(Box::new(|c,_| {
         let a=args(c);
+        if let Some(data)=super::aws_network::tests::fixture(c) {return Ok(data);}
         if a.iter().any(|a|a=="get-caller-identity") {return Ok(bytes(json!({"Account":"123"})));}
         assert!(a.iter().any(|a|a=="describe-instances"));
         Ok(bytes(json!({"Reservations":[{"Instances":[{"InstanceId":"i-foreign","Tags":[{"Key":"herdr-job","Value":"foreign"}]}]}]})))

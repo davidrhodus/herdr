@@ -660,7 +660,25 @@ Choose **Create AWS EC2**, **Create AWS Nitro Sandbox**, or **Create Google Clou
 Review the account, location, image, size and network, then type `CREATE`.
 Resources incur provider charges. The selected subnet must have outbound internet;
 this initial implementation assigns an external address for egress and blocks
-public SSH. AWS requires an existing security group with no inbound rules.
+public SSH. AWS networking is selected by name in the TUI. Choose a VPC, then a public
+subnet and a security group; names, IDs, availability zones and free addresses
+are shown without requiring you to enter IDs. Only subnets with an active route
+to an attached internet gateway and groups with no inbound rules and unrestricted
+outbound IPv4 traffic are offered.
+
+Choose **N — Create new** in either picker to create a subnet or security group.
+For a subnet, choose an existing public route table and availability zone;
+Herdr proposes a free IPv4 range that avoids every existing subnet. Review and
+type `CREATE`. A new group has no inbound rules and permits outbound traffic.
+Existing routes and security-group rules are left unchanged. These reusable
+network resources remain after instance deletion.
+
+For a saved account, choose **8 — Choose / create AWS networking**, or enter
+`choose` at the networking prompt when creating an instance. Interrupted network
+creation is retained under **9 — Resume network creation**; Resume checks ownership
+and recovers lost create/association replies. **abandon** retains an archive and
+any AWS resources, then frees the wizard to start another setup. Networking is
+revalidated before an instance launch.
 GCP creates an owned IPv4 SSH deny rule; organization policies that disallow
 metadata SSH keys or external addresses can prevent setup.
 
