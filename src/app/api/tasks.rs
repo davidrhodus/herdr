@@ -627,13 +627,19 @@ mod tests {
         assert!(first.get("error").is_none(), "{first}");
         let again = call(&mut app, Method::JobStart(params));
         assert_eq!(first["result"]["job"]["id"], again["result"]["job"]["id"]);
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        let prompt = rx.try_recv().unwrap();
+        let prompt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("tracked prompt was not delivered")
+            .expect("tracked prompt channel closed");
         let prompt = String::from_utf8_lossy(&prompt);
         assert!(prompt.contains("Redirect preserved"));
         assert!(prompt.contains(first["result"]["job"]["report_token"].as_str().unwrap()));
         assert!(prompt.contains("herdr job report"));
-        assert!(!rx.try_recv().unwrap().is_empty()); // delayed Enter
+        let enter = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("tracked Enter was not delivered")
+            .expect("tracked prompt channel closed before Enter");
+        assert!(!enter.is_empty());
         assert!(
             rx.try_recv().is_err(),
             "duplicate launch submitted extra terminal input"
